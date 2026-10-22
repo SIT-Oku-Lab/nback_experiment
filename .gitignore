@@ -1,0 +1,9 @@
+__pycache__/
+.build_deps/
+.test_tmp/
+build/
+dist/
+results/
+verification_results/
+*.spec
+*.zip

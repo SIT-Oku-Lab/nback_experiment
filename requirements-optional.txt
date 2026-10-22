@@ -1,0 +1,2 @@
+# Only needed when running the Python source with LSL synchronization.
+pylsl==1.18.5
