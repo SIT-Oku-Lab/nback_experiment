@@ -25,6 +25,7 @@ class TkTouchTests(unittest.TestCase):
         # Emulate exactly the supported viewport; no physical monitor setting is changed.
         self.root.geometry("1024x768+0+0")
         self.root.update()
+        self.fullscreen_attributes = self.root.attributes
         self.enterContext(patch.object(self.root, "attributes", return_value=None))
         self.enterContext(patch.object(self.app, "schedule_tick", return_value=None))
         self.app.config = Config(participant="GUI_SYNTHETIC", input_mode="touch", mode="demo",
@@ -142,6 +143,31 @@ class TkTouchTests(unittest.TestCase):
             self.assertIsNone(self.app.abort_timer)
         finally:
             self.root.tk.call("tk", "scaling", old)
+
+    def test_real_fullscreen_transition_does_not_trigger_display_abort(self):
+        self.app.abort("test_restart")
+        self.root.attributes = self.fullscreen_attributes
+        self.app.rec = Recorder(self.app.rec.path.parent, self.app.config)
+        self.app.enter_session()
+        self.root.focus_force()
+        self.root.update()
+        self.assertEqual((self.app.canvas.winfo_width(), self.app.canvas.winfo_height()),
+                         (self.root.winfo_screenwidth(), self.root.winfo_screenheight()))
+        self.assertFalse(self.app.check_display_changed())
+        self.assertFalse(self.app.display_changed)
+
+    def test_real_tk_long_hold_timer_aborts_without_confirmation_dialog(self):
+        self.click("abort", release=False)
+        # Exercise Tk's real after callback, rather than calling the handler directly.
+        stop = self.root.after(1700, self.root.quit)
+        try:
+            self.root.mainloop()
+            self.assertFalse(self.app.active)
+            self.assertEqual(self.app.rec.metadata["reason"], "touch_hold")
+            self.assertIsNone(self.app.abort_timer)
+            self.assertIsNone(self.app.canvas)
+        finally:
+            self.root.after_cancel(stop)
 
     def test_keyboard_mode_starts_with_enter_and_keeps_canvas_without_controls(self):
         self.app.config = replace(self.app.config, input_mode="keyboard")

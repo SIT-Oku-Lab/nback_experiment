@@ -33,8 +33,10 @@ class App:
         self.root = root
         self.demo = demo
         self.root.title("N-back 実験 | 0-back / 2-back")
-        self.root.geometry("1020x850")
-        self.root.minsize(920, 760)
+        setup_width = min(1020, self.root.winfo_screenwidth() - 40)
+        setup_height = min(850, self.root.winfo_screenheight() - 100)
+        self.root.geometry(f"{setup_width}x{setup_height}")
+        self.root.minsize(min(920, setup_width), min(600, setup_height))
         self.root.configure(bg="#eeefed")
         style = ttk.Style()
         style.theme_use("clam")

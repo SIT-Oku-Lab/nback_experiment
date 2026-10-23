@@ -7,7 +7,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from engine import Config
+from engine import Config, make_sequence
 from app import App
 import test_experiment
 
@@ -286,6 +286,42 @@ class InputTests(unittest.TestCase):
             self.press(app, 3100)
             self.assertIsNone(app.current["response"])
             app.rec.finish("aborted")
+
+    def test_non_task_phases_have_no_response_and_ignore_contacts(self):
+        for phase in ("prepare", "baseline", "rest"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as folder:
+                app = self.make_app(folder)
+                app.phase = phase
+                app.phase_end = app.block_start + 10_000_000_000
+                app.render_touch_controls()
+                self.press(app, 100)
+                self.assertIsNone(app.current["response"])
+                app.on_pointer_release()
+                app.rec.finish("aborted")
+
+    def test_touch_repeats_release_and_all_task_durations(self):
+        for mode in ("experiment", "practice", "demo"):
+            for n in (0, 2):
+                with self.subTest(mode=mode, n=n), tempfile.TemporaryDirectory() as folder:
+                    app = self.make_app(folder, n)
+                    app.config = replace(app.config, mode=mode)
+                    app.sequences = [make_sequence(app.config, n, 0)]
+                    # Start a fresh deterministic block with the selected duration.
+                    app.current = None
+                    app.current_index = -1
+                    app.presented = set()
+                    app.block_end = app.block_start + app.config.duration_ms * 1_000_000
+                    app.render_touch_controls()
+                    for ms in range(0, app.config.duration_ms, app.config.interval_ms):
+                        self.advance(app, ms)
+                        self.press(app, ms + 100)
+                        self.press(app, ms + 150)  # Duplicate press without release.
+                        app.on_pointer_release()
+                    self.advance(app, app.config.duration_ms)
+                    self.assertEqual(app.rec.metadata["status"], "completed")
+                    self.assertEqual(len(app.rec.rows), app.config.duration_ms // app.config.interval_ms)
+                    self.assertEqual(sum(r["responded"] for r in app.rec.rows), len(app.rec.rows) - n)
+                    self.assertTrue(all(r["rt_ms"] == 100 for r in app.rec.rows if r["responded"]))
 
 
 if __name__ == "__main__":
