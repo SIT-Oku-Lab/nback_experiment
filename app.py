@@ -20,6 +20,7 @@ import traceback
 from engine import (BACKGROUND, FIXATION, GRID, STIMULUS, INTERVALS, VERSION,
                     Config, accepts_response, classify, make_sequence, scheduled_index, summarize)
 from storage import Recorder, utc_iso
+from windows_touch import WindowsTouchPolicy
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 ORDERS = {"0-back → 2-back": (0, 2), "2-back → 0-back": (2, 0),
@@ -72,6 +73,7 @@ class App:
         self.abort_hold_start = None
         self.session_display = None
         self.display_changed = False
+        self.touch_policy = None
         self.block_index = 0
         self.current_index = -1
         self.current = None
@@ -107,6 +109,9 @@ class App:
         self.show_setup()
 
     def clear(self):
+        if self.touch_policy is not None:
+            self.touch_policy.restore()
+            self.touch_policy = None
         if self.frame is not None:
             self.frame.destroy()
             self.frame = None
@@ -392,8 +397,11 @@ class App:
             "pointer_event": "Tk ButtonPress-1; touch and mouse are indistinguishable" if self.config.input_mode == "touch" else None,
         }
         if self.config.input_mode == "touch":
+            self.touch_policy = WindowsTouchPolicy()
+            windows_touch = self.touch_policy.install(self.root, self.canvas)
             self.rec.metadata["input"].update(
                 task_regions=self.touch_layout(*self.session_display[:2], "task"), abort_hold_ms=1500,
+                windows_touch=windows_touch,
                 response_feedback={"kind": "grayscale_press", "minimum_ms": 150, "depends_on_scoring": False})
         self.rec.save_metadata()
         if self.config.input_mode == "touch":
@@ -694,11 +702,19 @@ class App:
         self.touch_regions = self.touch_layout(self.canvas.winfo_width(), self.canvas.winfo_height(), self.phase)
         for action, (left, top, right, bottom) in self.touch_regions.items():
             self.canvas.create_rectangle(left, top, right, bottom, fill="#707070", outline="#dedede", width=2,
-                                         tags=("touch-control", "response-face") if action == "response" else "touch-control")
+                                         tags=("touch-control", action + "-face"))
             self.canvas.create_text((left + right) / 2, (top + bottom) / 2,
                                     text={"abort": "長押しで中止", "start": "開始", "response": "一致"}[action],
                                     fill="#ededed", font=("Yu Gothic UI", -18 if action == "abort" else -26, "bold"),
-                                    tags=("touch-control", "response-label") if action == "response" else "touch-control")
+                                    tags=("touch-control", action + "-label"))
+        if self.abort_hold_start is not None:
+            self.paint_abort_hold(max(0, 1.5 - (time.perf_counter_ns() - self.abort_hold_start) / 1e9))
+
+    def paint_abort_hold(self, remaining=None):
+        if self.canvas is not None:
+            self.canvas.itemconfigure("abort-face", fill="#bfbfbf" if remaining is not None else "#707070")
+            self.canvas.itemconfigure("abort-label", fill="#262b2a" if remaining is not None else "#ededed",
+                                      text=f"中止まで {remaining:.1f} 秒" if remaining is not None else "長押しで中止")
 
     def paint_response_feedback(self, pressed):
         if self.canvas is not None:
@@ -758,7 +774,9 @@ class App:
             self.respond("touch", event, at)
         elif action == "abort":
             self.abort_hold_start = at
-            self.abort_timer = self.root.after(1500, self.complete_abort_hold)
+            self.rec.event("abort_hold_start", at, phase=self.phase, required_ms=1500)
+            self.paint_abort_hold(1.5)
+            self.abort_timer = self.root.after(100, self.complete_abort_hold)
         return "break"
 
     def on_pointer_release(self, event=None):
@@ -781,6 +799,7 @@ class App:
             self.root.after_cancel(self.abort_timer)
             self.abort_timer = None
         self.abort_hold_start = None
+        self.paint_abort_hold()
 
     def complete_abort_hold(self):
         self.abort_timer = None
@@ -788,7 +807,8 @@ class App:
             return
         remaining = 1_500_000_000 - (time.perf_counter_ns() - self.abort_hold_start)
         if remaining > 0:
-            self.abort_timer = self.root.after(math.ceil(remaining / 1e6), self.complete_abort_hold)
+            self.paint_abort_hold(remaining / 1e9)
+            self.abort_timer = self.root.after(min(100, math.ceil(remaining / 1e6)), self.complete_abort_hold)
         else:
             self.abort("touch_hold")
 

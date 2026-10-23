@@ -3,6 +3,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import tempfile
+import sys
 import tkinter as tk
 import unittest
 from unittest.mock import patch
@@ -10,6 +11,7 @@ from unittest.mock import patch
 from app import App
 from engine import Config
 from storage import Recorder
+from windows_touch import FLAGS, PROPERTY
 
 
 class TkTouchTests(unittest.TestCase):
@@ -158,6 +160,7 @@ class TkTouchTests(unittest.TestCase):
 
     def test_real_tk_long_hold_timer_aborts_without_confirmation_dialog(self):
         self.click("abort", release=False)
+        self.assertIn("中止まで", self.app.canvas.itemcget("abort-label", "text"))
         # Exercise Tk's real after callback, rather than calling the handler directly.
         stop = self.root.after(1700, self.root.quit)
         try:
@@ -168,6 +171,29 @@ class TkTouchTests(unittest.TestCase):
             self.assertIsNone(self.app.canvas)
         finally:
             self.root.after_cancel(stop)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows-specific window properties")
+    def test_windows_long_press_policy_is_applied_and_restored_on_exit(self):
+        policy = self.app.touch_policy
+        saved = policy.previous.copy()
+        self.assertTrue(self.app.rec.metadata["input"]["windows_touch"]["applied"])
+        self.assertIn(self.app.canvas.winfo_id(), saved)
+        for hwnd, old in saved.items():
+            self.assertEqual(policy.api.GetPropW(hwnd, PROPERTY), old | FLAGS)
+        self.app.abort("test_cleanup")
+        self.assertIsNone(self.app.touch_policy)
+        # The top-level wrapper still exists after the task canvas is destroyed.
+        hwnd = policy.api.GetAncestor(self.root.winfo_id(), 2)
+        self.assertEqual(policy.api.GetPropW(hwnd, PROPERTY) or 0, saved[hwnd])
+
+    def test_abort_countdown_cancels_when_contact_moves_out(self):
+        self.click("abort", release=False)
+        self.assertEqual(self.app.canvas.itemcget("abort-face", "fill"), "#bfbfbf")
+        self.app.canvas.event_generate("<B1-Motion>", x=0, y=0)
+        self.assertIsNone(self.app.abort_timer)
+        self.assertEqual(self.app.canvas.itemcget("abort-label", "text"), "長押しで中止")
+        self.assertTrue(self.app.active)
+        self.app.canvas.event_generate("<ButtonRelease-1>", x=0, y=0)
 
     def test_keyboard_mode_starts_with_enter_and_keeps_canvas_without_controls(self):
         self.app.config = replace(self.app.config, input_mode="keyboard")
