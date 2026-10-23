@@ -66,6 +66,8 @@ class App:
         self.pointer_action = None
         self.touch_regions = {}
         self.abort_timer = None
+        self.response_feedback_timer = None
+        self.response_feedback_until = None
         self.focus_timer = None
         self.abort_hold_start = None
         self.session_display = None
@@ -391,7 +393,8 @@ class App:
         }
         if self.config.input_mode == "touch":
             self.rec.metadata["input"].update(
-                task_regions=self.touch_layout(*self.session_display[:2], "task"), abort_hold_ms=1500)
+                task_regions=self.touch_layout(*self.session_display[:2], "task"), abort_hold_ms=1500,
+                response_feedback={"kind": "grayscale_press", "minimum_ms": 150, "depends_on_scoring": False})
         self.rec.save_metadata()
         if self.config.input_mode == "touch":
             error = self.touch_display_error(*self.session_display[:2])
@@ -683,16 +686,48 @@ class App:
         return regions
 
     def render_touch_controls(self):
+        self.reset_response_feedback()
         if self.config.input_mode != "touch":
             self.touch_regions = {}
             return
         self.canvas.delete("touch-control")
         self.touch_regions = self.touch_layout(self.canvas.winfo_width(), self.canvas.winfo_height(), self.phase)
         for action, (left, top, right, bottom) in self.touch_regions.items():
-            self.canvas.create_rectangle(left, top, right, bottom, fill="#707070", outline="#dedede", width=2, tags="touch-control")
+            self.canvas.create_rectangle(left, top, right, bottom, fill="#707070", outline="#dedede", width=2,
+                                         tags=("touch-control", "response-face") if action == "response" else "touch-control")
             self.canvas.create_text((left + right) / 2, (top + bottom) / 2,
                                     text={"abort": "長押しで中止", "start": "開始", "response": "一致"}[action],
-                                    fill="#ededed", font=("Yu Gothic UI", -18 if action == "abort" else -26, "bold"), tags="touch-control")
+                                    fill="#ededed", font=("Yu Gothic UI", -18 if action == "abort" else -26, "bold"),
+                                    tags=("touch-control", "response-label") if action == "response" else "touch-control")
+
+    def paint_response_feedback(self, pressed):
+        if self.canvas is not None:
+            self.canvas.itemconfigure("response-face", fill="#bfbfbf" if pressed else "#707070")
+            self.canvas.itemconfigure("response-label", fill="#262b2a" if pressed else "#ededed")
+
+    def reset_response_feedback(self):
+        if self.response_feedback_timer is not None:
+            self.root.after_cancel(self.response_feedback_timer)
+            self.response_feedback_timer = None
+        self.response_feedback_until = None
+        self.paint_response_feedback(False)
+
+    def show_response_feedback(self, at):
+        self.reset_response_feedback()
+        self.response_feedback_until = at + 150_000_000
+        self.paint_response_feedback(True)
+
+    def release_response_feedback(self):
+        if self.response_feedback_timer is not None:
+            self.root.after_cancel(self.response_feedback_timer)
+            self.response_feedback_timer = None
+        if self.response_feedback_until is None:
+            return
+        remaining = self.response_feedback_until - time.perf_counter_ns()
+        if self.active and self.phase == "task" and remaining > 0:
+            self.response_feedback_timer = self.root.after(math.ceil(remaining / 1e6), self.release_response_feedback)
+        else:
+            self.reset_response_feedback()
 
     def pointer_position(self, event):
         if hasattr(event, "x_root"):
@@ -718,6 +753,8 @@ class App:
         if action == "start":
             self.start_from_instruction()
         elif action == "response":
+            # Acknowledge the contact regardless of warmup, correctness or scoring acceptance.
+            self.show_response_feedback(at)
             self.respond("touch", event, at)
         elif action == "abort":
             self.abort_hold_start = at
@@ -727,6 +764,7 @@ class App:
     def on_pointer_release(self, event=None):
         self.pointer_down = False
         self.pointer_action = None
+        self.release_response_feedback()
         self.cancel_abort_hold()
         if self.canvas is not None and self.canvas.grab_current() == self.canvas:
             self.canvas.grab_release()

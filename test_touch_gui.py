@@ -182,6 +182,46 @@ class TkTouchTests(unittest.TestCase):
         self.assertIsNotNone(self.app.current["response"])
         self.app.canvas.event_generate("<KeyRelease-space>")
 
+    def test_response_press_is_visible_after_short_tap_and_then_resets(self):
+        self.click("start")
+        self.app.begin_block()
+        canvas = self.app.canvas
+        self.assertEqual(canvas.itemcget("response-face", "fill"), "#707070")
+        self.click("response", release=False)
+        self.assertEqual(canvas.itemcget("response-face", "fill"), "#bfbfbf")
+        self.assertEqual(canvas.itemcget("response-label", "fill"), "#262b2a")
+        self.assertIsNotNone(self.app.current["response"])
+        canvas.event_generate("<ButtonRelease-1>", x=-50, y=-50)
+        self.assertEqual(canvas.itemcget("response-face", "fill"), "#bfbfbf")
+        self.root.after(200, self.root.quit)
+        self.root.mainloop()
+        self.assertEqual(canvas.itemcget("response-face", "fill"), "#707070")
+        self.assertIsNone(self.app.response_feedback_timer)
+
+    def test_feedback_is_identical_for_warmup_and_rejected_repeated_tap(self):
+        self.click("start")
+        self.app.block_index = 1
+        self.app.begin_block()
+        canvas = self.app.canvas
+        self.click("response")
+        self.assertIsNone(self.app.current["response"])  # 2-back warmup is unscored.
+        self.assertEqual(canvas.itemcget("response-face", "fill"), "#bfbfbf")
+        # Move to an eligible trial, then tap twice within that same trial.
+        at = self.app.block_start + 1_200_000_000
+        with patch("app.time.perf_counter_ns", return_value=at):
+            self.app.advance(at)
+        with patch("app.time.perf_counter_ns", return_value=at + 100_000_000):
+            self.click("response")
+        response = self.app.current["response"]
+        self.assertIsNotNone(response)
+        with patch("app.time.perf_counter_ns", return_value=at + 200_000_000):
+            self.click("response")
+        self.assertEqual(self.app.current["response"], response)
+        self.assertEqual(canvas.itemcget("response-face", "fill"), "#bfbfbf")
+        self.app.begin_phase("rest", 1)
+        self.assertFalse(canvas.find_withtag("response-face"))
+        self.assertIsNone(self.app.response_feedback_timer)
+
 
 if __name__ == "__main__":
     unittest.main()

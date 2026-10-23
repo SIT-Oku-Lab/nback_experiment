@@ -62,6 +62,8 @@ class InputTests(unittest.TestCase):
         app.pointer_down = False
         app.pointer_action = None
         app.abort_timer = None
+        app.response_feedback_timer = None
+        app.response_feedback_until = None
         app.focus_timer = None
         app.abort_hold_start = None
         app.timer = None
