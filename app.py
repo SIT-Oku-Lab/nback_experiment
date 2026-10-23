@@ -20,11 +20,17 @@ import traceback
 from engine import (BACKGROUND, FIXATION, GRID, STIMULUS, INTERVALS, VERSION,
                     Config, accepts_response, classify, make_sequence, scheduled_index, summarize)
 from storage import Recorder, utc_iso
+from windows_touch import WindowsTouchPolicy
+from native_touch import WindowsTouchInput
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 ORDERS = {"0-back → 2-back": (0, 2), "2-back → 0-back": (2, 0),
           "0-back のみ": (0,), "2-back のみ": (2,)}
 POSITIONS = ("1 左上", "2 上", "3 右上", "4 左", "5 中央", "6 右", "7 左下", "8 下", "9 右下")
+INPUT_MODES = {"タッチ": "touch", "キーボード": "keyboard"}
+ABORT_HOLD_NS = 1_500_000_000
+ABORT_MOVE_MARGIN = 32
+ABORT_OUTSIDE_GRACE_NS = 250_000_000
 
 
 class App:
@@ -32,8 +38,10 @@ class App:
         self.root = root
         self.demo = demo
         self.root.title("N-back 実験 | 0-back / 2-back")
-        self.root.geometry("1020x850")
-        self.root.minsize(920, 760)
+        setup_width = min(1020, self.root.winfo_screenwidth() - 40)
+        setup_height = min(850, self.root.winfo_screenheight() - 100)
+        self.root.geometry(f"{setup_width}x{setup_height}")
+        self.root.minsize(min(920, setup_width), min(600, setup_height))
         self.root.configure(bg="#eeefed")
         style = ttk.Style()
         style.theme_use("clam")
@@ -59,11 +67,26 @@ class App:
         self.frame: ttk.Frame | None = None
         self.timer = None
         self.key_down = False
+        self.pointer_down = False
+        self.pointer_action = None
+        self.pointer_source = None
+        self.touch_regions = {}
+        self.abort_timer = None
+        self.response_feedback_timer = None
+        self.response_feedback_until = None
+        self.focus_timer = None
+        self.abort_hold_start = None
+        self.abort_outside_since = None
+        self.session_display = None
+        self.display_changed = False
+        self.touch_policy = None
+        self.native_touch = None
         self.block_index = 0
         self.current_index = -1
         self.current = None
         self.output = tk.StringVar(value=str(APP_DIR / "results"))
         self.participant = tk.StringVar(value="P001")
+        self.input_selection = tk.StringVar(value="タッチ")
         self.order = tk.StringVar(value=next(iter(ORDERS)))
         self.interval = tk.StringVar(value="3000")
         self.stimulus = tk.StringVar(value="500")
@@ -84,11 +107,21 @@ class App:
         self.root.bind("<KeyPress-M>", self.manual_marker)
         self.root.bind("<MouseWheel>", self.on_wheel)
         self.root.bind("<FocusOut>", self.on_focus_out)
+        self.root.bind("<ButtonPress-1>", self.on_pointer_press)
+        self.root.bind("<ButtonRelease-1>", self.on_pointer_release)
+        self.root.bind("<B1-Motion>", self.on_pointer_motion)
+        self.root.bind("<Configure>", self.on_display_configure)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.report_callback_exception = self.on_error
         self.show_setup()
 
     def clear(self):
+        if self.native_touch is not None:
+            self.native_touch.stop()
+            self.native_touch = None
+        if self.touch_policy is not None:
+            self.touch_policy.restore()
+            self.touch_policy = None
         if self.frame is not None:
             self.frame.destroy()
             self.frame = None
@@ -117,7 +150,7 @@ class App:
             button.pack(side="left", padx=(0, 10))
             self.start_buttons.append(button)
         ttk.Button(buttons, text="手順書を開く", command=self.open_manual).pack(side="right")
-        self.label(footer, "Enter：説明から進む    Space：一致に応答    Esc：中止して保存    M：手動時刻マーカー", "Muted.TLabel").pack(anchor="w", pady=(10, 0))
+        self.label(footer, "タッチ：開始・一致ボタン／長押しで中止　　キーボード：Enter・Space・Esc\n入力方式は開始前に選択します。M：実験者の手動時刻マーカー", "Muted.TLabel").pack(anchor="w", pady=(10, 0))
         scroll_area = ttk.Frame(self.frame)
         scroll_area.pack(fill="both", expand=True)
         scrollbar = ttk.Scrollbar(scroll_area, orient="vertical")
@@ -167,12 +200,13 @@ class App:
         self.label(left, "各12秒（動作確認）" if self.demo else "各10分", "Heading.TLabel").grid(row=3, column=1, sticky="w")
         self.form_row(left, 4, "開始前の安静（秒）", self.baseline, width=11)
         self.form_row(left, 5, "課題間の休憩（秒）", self.rest, width=11)
-        self.label(left, "単独課題を選んだ場合は10分です。\n練習は選択した各課題を60秒ずつ行います。", "Muted.TLabel").grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.form_row(left, 6, "入力方式", self.input_selection, tuple(INPUT_MODES), width=20)
+        self.label(left, "単独課題を選んだ場合は10分です。\n練習は選択した各課題を60秒ずつ行います。", "Muted.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.label(right, "参加者の画面", "Heading.TLabel").pack(anchor="w")
         preview = tk.Canvas(right, width=210, height=160, bg=BACKGROUND, highlightthickness=0)
         preview.pack(anchor="w", pady=(12, 10))
         self.draw_grid(preview, 105, 80, 126, sample=1)
-        self.label(right, "グレー背景・固定グリッド・位置刺激のみ。\n得点、残り時間、正誤表示、効果音はありません。\n一致したときだけ Space キーを押します。", "Muted.TLabel", wraplength=350).pack(anchor="w")
+        self.label(right, "グレー背景・固定グリッド・位置刺激のみ。\n得点、残り時間、正誤表示、効果音はありません。\nタッチ：一致ボタンに触れます。\nキーボード：Spaceキーを押します。\nタッチは横向き・表示領域1024×768以上。", "Muted.TLabel", wraplength=350).pack(anchor="w")
         ttk.Separator(f).pack(fill="x", pady=18)
         self.label(f, "刺激・記録の設定", "Heading.TLabel").pack(anchor="w", pady=(0, 8))
         advanced = ttk.Frame(f)
@@ -223,6 +257,7 @@ class App:
                          target_percent=int(self.target_percent.get()), zero_target=POSITIONS.index(self.target_position.get()),
                          baseline_s=int(self.baseline.get()), rest_s=int(self.rest.get()), seed=int(self.seed.get()),
                          mode="practice" if practice else "experiment", lsl=self.lsl_enabled.get(),
+                         input_mode=INPUT_MODES[self.input_selection.get()],
                          physiology=self.physiology_enabled.get(),
                          physiology_uid=self.streams[self.stream_selection.get()].uid() if self.stream_selection.get() in self.streams else "",
                          physiology_name=self.streams[self.stream_selection.get()].name() if self.stream_selection.get() in self.streams else "")
@@ -240,6 +275,10 @@ class App:
             return
         try:
             cfg = self.read_config(practice)
+            if cfg.input_mode == "touch":
+                error = self.touch_display_error(self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+                if error:
+                    raise ValueError(error)
             if not self.output.get().strip():
                 raise ValueError("保存先を指定してください。")
             parent = Path(self.output.get()).expanduser().resolve()
@@ -351,13 +390,39 @@ class App:
         self.canvas.focus_set()
         self.active = True
         self.key_down = False
+        self.pointer_down = False
+        self.pointer_action = None
+        self.touch_regions = {}
+        self.display_changed = False
+        self.session_display = self.display_signature()
         self.block_index = 0
         self.current = None
         self.presented = set()
         self.rec.metadata.update(display={"width_px": self.canvas.winfo_width(), "height_px": self.canvas.winfo_height(),
                                           "tk_scaling": self.root.tk.call("tk", "scaling"),
                                           "grid_size_px": 360, "gap_px": 8})
+        self.rec.metadata["input"] = {
+            "mode": self.config.input_mode,
+            "response_time_definition": "monotonic native-contact callback or Tk-handler entry; not physical contact time",
+            "pointer_event": "WM_POINTERDOWN primary contacts; Tk mouse/pen fallback" if self.config.input_mode == "touch" else None,
+        }
+        if self.config.input_mode == "touch":
+            self.touch_policy = WindowsTouchPolicy()
+            windows_touch = self.touch_policy.install(self.root, self.canvas)
+            self.native_touch = WindowsTouchInput(self.root, self.canvas, self.on_native_contact)
+            native_touch = self.native_touch.install()
+            self.rec.metadata["input"].update(
+                task_regions=self.touch_layout(*self.session_display[:2], "task"), abort_hold_ms=1500,
+                abort_move_margin_px=ABORT_MOVE_MARGIN, abort_outside_grace_ms=250,
+                windows_touch=windows_touch,
+                native_touch=native_touch,
+                response_feedback={"kind": "grayscale_press", "minimum_ms": 150, "depends_on_scoring": False})
         self.rec.save_metadata()
+        if self.config.input_mode == "touch":
+            error = self.touch_display_error(*self.session_display[:2])
+            if error:
+                self.abort("display_unsupported")
+                return
         self.show_instruction()
         self.schedule_tick()
 
@@ -368,21 +433,27 @@ class App:
         c.delete("all")
         x, y = c.winfo_width() / 2, c.winfo_height() / 2
         n = self.config.conditions[self.block_index]
-        c.create_text(x, y - 230, text=f"{n}-back", font=("Yu Gothic UI", 32, "bold"), fill="#ededed")
+        touch = self.config.input_mode == "touch"
+        font_size = lambda points: -round(points * 4 / 3) if touch else points
+        c.create_text(x, y - 230, text=f"{n}-back", font=("Yu Gothic UI", font_size(32), "bold"), fill="#ededed")
+        action = "一致ボタンに1回触れてください。" if touch else "Space キーを1回押してください。"
         if n == 0:
-            text = f"指定された位置（{POSITIONS[self.config.zero_target]}）に出たときだけ\nSpace キーを1回押してください。"
+            text = f"指定された位置（{POSITIONS[self.config.zero_target]}）に出たときだけ\n{action}"
             self.draw_grid(c, x, y - 20, 156, sample=self.config.zero_target)
         else:
-            text = "現在の位置が「2つ前」と同じときだけ\nSpace キーを1回押してください。最初の2試行は見るだけです。"
+            text = f"現在の位置が「2つ前」と同じときだけ\n{action}最初の2試行は見るだけです。"
             self.draw_grid(c, x, y - 20, 156)
-        c.create_text(x, y - 155, text=text, justify="center", font=("Yu Gothic UI", 16), fill="#ededed")
+        c.create_text(x, y - 155, text=text, justify="center", width=c.winfo_width() - 80,
+                      font=("Yu Gothic UI", font_size(16)), fill="#ededed")
         duration = self.config.duration_ms // 1000
         duration_text = "10分間" if duration == 600 else f"{duration}秒間"
-        c.create_text(x, y + 108, text=f"{duration_text}、位置を見て判断してください。", font=("Yu Gothic UI", 14), fill="#ededed")
-        c.create_text(x, y + 168, text="準備ができたら Enter", font=("Yu Gothic UI", 18, "bold"), fill="#ededed")
-        c.create_text(x, y + 212, text=f"{self.config.prepare_s}秒の準備後に開始します。中止は Esc。", font=("Yu Gothic UI", 11), fill="#e0e0e0")
+        c.create_text(x, y + 108, text=f"{duration_text}、位置を見て判断してください。", font=("Yu Gothic UI", font_size(14)), fill="#ededed")
+        c.create_text(x, y + 168, text="準備ができたら下の開始に触れてください" if touch else "準備ができたら Enter", font=("Yu Gothic UI", font_size(18), "bold"), fill="#ededed")
+        stop = "中止は右上を1.5秒長押し。" if touch else "中止は Esc。"
+        c.create_text(x, y + 212, text=f"{self.config.prepare_s}秒の準備後に開始します。{stop}", font=("Yu Gothic UI", font_size(11)), fill="#e0e0e0")
         if self.block_index == 0 and self.config.baseline_s:
-            c.create_text(x, y + 245, text=f"最初に{self.config.baseline_s}秒間、中央を見て安静にしてください。", font=("Yu Gothic UI", 11), fill="#e0e0e0")
+            c.create_text(x, y + 245, text=f"最初に{self.config.baseline_s}秒間、中央を見て安静にしてください。", font=("Yu Gothic UI", font_size(11)), fill="#e0e0e0")
+        self.render_touch_controls()
         self.root.update_idletasks()
 
     @staticmethod
@@ -404,17 +475,26 @@ class App:
     def neutral_screen(self):
         self.canvas.delete("all")
         self.cells = self.draw_grid(self.canvas, self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2, 360)
+        self.render_touch_controls()
         self.root.update_idletasks()
 
     def on_enter(self, event=None):
+        if self.active and self.config.input_mode == "keyboard":
+            self.start_from_instruction()
+        return "break" if self.active else None
+
+    def start_from_instruction(self):
         if self.active and self.phase == "ready":
+            if self.display_changed:
+                self.abort("display_changed")
+                return
             self.rec.event("instruction_end", block=self.block_index + 1)
             self.neutral_screen()
             self.begin_phase("prepare", self.config.prepare_s)
-        return "break" if self.active else None
 
     def begin_phase(self, phase: str, seconds: float, at=None):
         self.phase = phase
+        self.render_touch_controls()
         now = time.perf_counter_ns() if at is None else at
         self.phase_end = now + round(seconds * 1e9)
         self.rec.event(phase + "_start", now, block=self.block_index + 1, duration_s=seconds)
@@ -427,6 +507,8 @@ class App:
     def tick(self):
         self.timer = None
         if not self.active:
+            return
+        if self.config.input_mode == "touch" and self.check_display_changed():
             return
         sensor_error = self.rec.physiology_error()
         if sensor_error:
@@ -457,6 +539,8 @@ class App:
 
     def begin_block(self):
         self.phase = "task"
+        self.render_touch_controls()
+        self.root.update_idletasks()
         self.current_index = -1
         self.current = None
         self.presented = set()
@@ -559,11 +643,22 @@ class App:
         self.current_index = index
 
     def on_space(self, event):
+        at = time.perf_counter_ns()
         if not self.active:
             return
-        at = time.perf_counter_ns()
+        if self.config.input_mode != "keyboard":
+            return "break"
         repeated = self.key_down
         self.key_down = True
+        return self.respond("keyboard", event, at, repeated)
+
+    def respond(self, source, event, at, repeated=False):
+        """Use the input handler's entry timestamp, before any scheduler/redraw work."""
+        if not self.active or source != self.config.input_mode:
+            return "break" if self.active else None
+        if self.display_changed:
+            self.abort("display_changed")
+            return "break"
         self.advance(at)
         if not self.active:
             return "break"
@@ -571,7 +666,7 @@ class App:
         reason = "outside_task"
         trial_number = None
         if repeated:
-            reason = "key_held"
+            reason = "key_held" if source == "keyboard" else "touch_held"
         elif self.phase == "task" and self.current:
             data = self.current
             trial_number = data["trial"].index + 1
@@ -585,13 +680,260 @@ class App:
                 reason = "already_responded"
             else:
                 reason = "outside_response_window"
+        details = {"input_mode": source, "tk_event_time_ms": getattr(event, "time", None)}
+        if getattr(event, "input_source", None) == "wm_pointer":
+            details.update(input_source="wm_pointer", contact_id=event.contact_id,
+                           native_event_time_ms=event.time, tk_event_time_ms=None)
+        if source == "keyboard":
+            details["key"] = "space"
+        else:
+            x, y = self.pointer_position(event)
+            details.update(x=x, y=y, input_source=getattr(event, "input_source", "tk_pointer"))
         self.rec.event("response" if accepted else "response_ignored", at, block=self.block_index + 1,
-                       trial=trial_number, key="space", reason=reason, tk_event_time_ms=getattr(event, "time", None))
+                       trial=trial_number, reason=reason, **details)
         return "break"
 
     def on_release(self, event=None):
         self.key_down = False
         return "break" if self.active else None
+
+    @staticmethod
+    def touch_display_error(width, height):
+        if width < 1024 or height < 768 or width <= height:
+            return "タッチ操作には横向き・有効表示領域1024×768以上が必要です。画面の向きと解像度を確認してください。"
+        return None
+
+    @staticmethod
+    def touch_layout(width, height, phase):
+        regions = {"abort": (width - 284, 24, width - 24, 112)}
+        if phase in ("ready", "task"):
+            regions["start" if phase == "ready" else "response"] = (width / 2 - 160, height - 124, width / 2 + 160, height - 24)
+        return regions
+
+    def render_touch_controls(self):
+        self.reset_response_feedback()
+        if self.config.input_mode != "touch":
+            self.touch_regions = {}
+            return
+        self.canvas.delete("touch-control")
+        self.touch_regions = self.touch_layout(self.canvas.winfo_width(), self.canvas.winfo_height(), self.phase)
+        for action, (left, top, right, bottom) in self.touch_regions.items():
+            self.canvas.create_rectangle(left, top, right, bottom, fill="#707070", outline="#dedede", width=2,
+                                         tags=("touch-control", action + "-face"))
+            self.canvas.create_text((left + right) / 2, (top + bottom) / 2,
+                                    text={"abort": "長押しで中止", "start": "開始", "response": "一致"}[action],
+                                    fill="#ededed", font=("Yu Gothic UI", -18 if action == "abort" else -26, "bold"),
+                                    tags=("touch-control", action + "-label"))
+        if self.abort_hold_start is not None:
+            self.paint_abort_hold(max(0, (ABORT_HOLD_NS - (time.perf_counter_ns() - self.abort_hold_start)) / 1e9))
+
+    def paint_abort_hold(self, remaining=None):
+        if self.canvas is not None:
+            # Do not show 0.0 while the 1.5-second threshold has not been reached.
+            shown = math.ceil(max(0, remaining) * 10) / 10 if remaining is not None else None
+            self.canvas.itemconfigure("abort-face", fill="#bfbfbf" if remaining is not None else "#707070")
+            self.canvas.itemconfigure("abort-label", fill="#262b2a" if remaining is not None else "#ededed",
+                                      text=("指をボタンへ戻す" if self.abort_outside_since is not None else f"中止まで {shown:.1f} 秒")
+                                      if remaining is not None else "長押しで中止")
+
+    def paint_response_feedback(self, pressed):
+        if self.canvas is not None:
+            self.canvas.itemconfigure("response-face", fill="#bfbfbf" if pressed else "#707070")
+            self.canvas.itemconfigure("response-label", fill="#262b2a" if pressed else "#ededed")
+
+    def reset_response_feedback(self):
+        if self.response_feedback_timer is not None:
+            self.root.after_cancel(self.response_feedback_timer)
+            self.response_feedback_timer = None
+        self.response_feedback_until = None
+        self.paint_response_feedback(False)
+
+    def show_response_feedback(self, at):
+        self.reset_response_feedback()
+        self.response_feedback_until = at + 150_000_000
+        self.paint_response_feedback(True)
+
+    def release_response_feedback(self):
+        if self.response_feedback_timer is not None:
+            self.root.after_cancel(self.response_feedback_timer)
+            self.response_feedback_timer = None
+        if self.response_feedback_until is None:
+            return
+        remaining = self.response_feedback_until - time.perf_counter_ns()
+        if self.active and self.phase == "task" and remaining > 0:
+            self.response_feedback_timer = self.root.after(math.ceil(remaining / 1e6), self.release_response_feedback)
+        else:
+            self.reset_response_feedback()
+
+    def pointer_position(self, event):
+        if hasattr(event, "x_root"):
+            return event.x_root - self.canvas.winfo_rootx(), event.y_root - self.canvas.winfo_rooty()
+        return event.x, event.y
+
+    def touch_action_at(self, x, y):
+        return next((action for action, (l, t, r, b) in self.touch_regions.items() if l <= x < r and t <= y < b), None)
+
+    @staticmethod
+    def contact_time(event):
+        return event.perf_ns if event is not None and hasattr(event, "perf_ns") else time.perf_counter_ns()
+
+    def on_native_contact(self, kind, event):
+        if not self.active:
+            return
+        if kind == "down":
+            self.on_pointer_press(event)
+        elif kind == "move":
+            self.on_pointer_motion(event)
+        elif kind == "up":
+            self.on_pointer_release(event)
+        elif kind == "cancel":
+            self.cancel_abort_hold("contact_cancelled", event.perf_ns)
+            self.on_pointer_release()
+        elif kind == "error":
+            self.rec.event("touch_input_error", event.perf_ns, message=event.message)
+            self.abort("touch_input_error")
+
+    def duplicate_mouse_contact(self, event):
+        if event is None or getattr(event, "input_source", None) == "wm_pointer":
+            return False
+        native = getattr(self, "native_touch", None)
+        return ((self.pointer_down and self.pointer_source == "wm_pointer")
+                or (native is not None and native.primary_id is not None))
+
+    def on_pointer_press(self, event):
+        at = self.contact_time(event)
+        if not self.active or self.config.input_mode != "touch":
+            return
+        if self.duplicate_mouse_contact(event):
+            return "break"
+        x, y = self.pointer_position(event)
+        action = self.touch_action_at(x, y)
+        if self.pointer_down:
+            if action == "response":
+                self.respond("touch", event, at, repeated=True)
+            return "break"
+        self.pointer_down = True
+        self.pointer_action = action
+        self.pointer_source = getattr(event, "input_source", "tk_pointer")
+        # WM_POINTER already retains the contact. A Tk mouse grab can synthesize an
+        # immediate mouse release because Tk never saw a matching mouse press.
+        if self.pointer_source != "wm_pointer":
+            self.canvas.grab_set()
+        if action == "start":
+            self.start_from_instruction()
+        elif action == "response":
+            # Acknowledge the contact regardless of warmup, correctness or scoring acceptance.
+            self.show_response_feedback(at)
+            self.respond("touch", event, at)
+        elif action == "abort":
+            self.abort_hold_start = at
+            self.abort_outside_since = None
+            self.rec.event("abort_hold_start", at, phase=self.phase, required_ms=1500, x=x, y=y,
+                           input_source=getattr(event, "input_source", "tk_pointer"),
+                           contact_id=getattr(event, "contact_id", None),
+                           move_margin_px=ABORT_MOVE_MARGIN, outside_grace_ms=250)
+            self.paint_abort_hold(max(0, (ABORT_HOLD_NS - (time.perf_counter_ns() - at)) / 1e9))
+            self.abort_timer = self.root.after(100, self.complete_abort_hold)
+        return "break"
+
+    def on_pointer_release(self, event=None):
+        if self.active and self.duplicate_mouse_contact(event):
+            return "break"
+        at = self.contact_time(event)
+        if self.active and self.pointer_action == "abort" and self.abort_hold_start is not None:
+            # A released contact may arrive before an overdue after() callback.
+            inside = self.abort_outside_since is None
+            if event is not None and (hasattr(event, "x") or hasattr(event, "x_root")):
+                inside = self.abort_retains_contact(*self.pointer_position(event))
+            expired_outside = (self.abort_outside_since is not None
+                               and at - self.abort_outside_since >= ABORT_OUTSIDE_GRACE_NS)
+            if inside and not expired_outside and at - self.abort_hold_start >= ABORT_HOLD_NS:
+                self.finish_abort_hold(at, "release")
+                return "break"
+            self.cancel_abort_hold("released_early" if inside and not expired_outside else "moved_outside", at)
+        self.pointer_down = False
+        self.pointer_action = None
+        self.pointer_source = None
+        self.release_response_feedback()
+        self.cancel_abort_hold()
+        if self.canvas is not None and self.canvas.grab_current() == self.canvas:
+            self.canvas.grab_release()
+        return "break" if self.active and self.config.input_mode == "touch" else None
+
+    def on_pointer_motion(self, event):
+        if self.active and self.duplicate_mouse_contact(event):
+            return "break"
+        at = self.contact_time(event)
+        if self.active and self.pointer_action == "abort" and self.abort_hold_start is not None:
+            inside = self.abort_retains_contact(*self.pointer_position(event))
+            if self.abort_outside_since is not None and at - self.abort_outside_since >= ABORT_OUTSIDE_GRACE_NS:
+                self.cancel_abort_hold("moved_outside", at)
+            elif inside:
+                self.abort_outside_since = None
+            elif self.abort_outside_since is None:
+                self.abort_outside_since = at
+                self.rec.event("abort_hold_outside", at, phase=self.phase,
+                               x=self.pointer_position(event)[0], y=self.pointer_position(event)[1])
+        return "break" if self.active and self.config.input_mode == "touch" else None
+
+    def abort_retains_contact(self, x, y):
+        bounds = self.touch_regions.get("abort")
+        if bounds is None:
+            return False
+        l, t, r, b = bounds
+        return (max(0, l - ABORT_MOVE_MARGIN) <= x < min(self.canvas.winfo_width(), r + ABORT_MOVE_MARGIN)
+                and max(0, t - ABORT_MOVE_MARGIN) <= y < min(self.canvas.winfo_height(), b + ABORT_MOVE_MARGIN))
+
+    def cancel_abort_hold(self, reason=None, at=None):
+        if reason is not None and self.abort_hold_start is not None:
+            at = time.perf_counter_ns() if at is None else at
+            self.rec.event("abort_hold_cancelled", at, phase=self.phase, reason=reason,
+                           elapsed_ms=(at - self.abort_hold_start) / 1e6)
+        if self.abort_timer is not None:
+            self.root.after_cancel(self.abort_timer)
+            self.abort_timer = None
+        self.abort_hold_start = None
+        self.abort_outside_since = None
+        self.paint_abort_hold()
+
+    def finish_abort_hold(self, at, trigger):
+        self.rec.event("abort_hold_completed", at, phase=self.phase, trigger=trigger,
+                       elapsed_ms=(at - self.abort_hold_start) / 1e6)
+        self.cancel_abort_hold()
+        self.abort("touch_hold")
+
+    def complete_abort_hold(self):
+        self.abort_timer = None
+        if not self.active or not self.pointer_down or self.pointer_action != "abort" or self.abort_hold_start is None:
+            return
+        at = time.perf_counter_ns()
+        if self.abort_outside_since is not None and at - self.abort_outside_since >= ABORT_OUTSIDE_GRACE_NS:
+            self.cancel_abort_hold("moved_outside", at)
+            return
+        remaining = ABORT_HOLD_NS - (at - self.abort_hold_start)
+        if remaining > 0 or self.abort_outside_since is not None:
+            self.paint_abort_hold(max(0, remaining / 1e9))
+            delay = min(100, math.ceil(remaining / 1e6)) if remaining > 0 else 100
+            self.abort_timer = self.root.after(delay, self.complete_abort_hold)
+        else:
+            self.finish_abort_hold(at, "timer")
+
+    def display_signature(self):
+        return (self.canvas.winfo_width(), self.canvas.winfo_height(), self.root.winfo_screenwidth(),
+                self.root.winfo_screenheight(), float(self.root.tk.call("tk", "scaling")))
+
+    def on_display_configure(self, event):
+        if (self.active and self.config.input_mode == "touch" and self.session_display is not None
+                and self.display_signature() != self.session_display):
+            # Defer saving/destruction out of update_idletasks inside stimulus redraws.
+            self.display_changed = True
+
+    def check_display_changed(self):
+        if self.active and self.config.input_mode == "touch" and (self.display_changed or self.display_signature() != self.session_display):
+            self.rec.event("display_change", original=self.session_display, observed=self.display_signature())
+            self.abort("display_changed")
+            return True
+        return False
 
     def manual_marker(self, event=None):
         if self.active:
@@ -600,10 +942,13 @@ class App:
 
     def on_focus_out(self, event=None):
         if self.active:
-            self.root.after(100, self.check_focus)
+            if self.focus_timer is not None:
+                self.root.after_cancel(self.focus_timer)
+            self.focus_timer = self.root.after(100, self.check_focus)
 
     def check_focus(self):
-        if self.active and self.phase in ("prepare", "baseline", "task", "rest") and self.root.focus_displayof() is None:
+        self.focus_timer = None
+        if self.active and (self.phase in ("prepare", "baseline", "task", "rest") or self.config.input_mode == "touch") and self.root.focus_displayof() is None:
             self.abort("focus_lost")
 
     def abort(self, reason):
@@ -618,6 +963,10 @@ class App:
     def finish(self, status, reason=""):
         self.active = False
         self.key_down = False
+        self.on_pointer_release()
+        if self.focus_timer is not None:
+            self.root.after_cancel(self.focus_timer)
+            self.focus_timer = None
         if self.timer is not None:
             self.root.after_cancel(self.timer)
             self.timer = None
@@ -638,6 +987,9 @@ class App:
         self.label(f, f"参加者：{self.config.participant}    モード：{mode}").pack(anchor="w")
         if reason:
             reasons = {"escape": "Escキー", "focus_lost": "課題画面からフォーカスが外れたため",
+                       "touch_input_error": "Windowsタッチ入力の受信エラー",
+                       "touch_hold": "中止ボタンの長押し", "display_changed": "画面の向き・表示領域・倍率が変更されたため",
+                       "display_unsupported": "タッチ操作の画面条件を満たしていないため",
                        "window_closed": "ウィンドウを閉じたため", "lsl_send_failed": "LSL送出エラー", "error": "アプリケーションエラー",
                        "physiology_stream_error": "OpenSignalsの生理信号の切断・時計同期・保存エラー"}
             self.label(f, "中止理由：" + reasons.get(reason, reason)).pack(anchor="w", pady=(8, 0))
@@ -675,6 +1027,11 @@ class App:
 
     def on_error(self, exc_type, exc, tb):
         self.active = False
+        self.on_pointer_release()
+        for timer in (self.timer, self.focus_timer):
+            if timer is not None:
+                self.root.after_cancel(timer)
+        self.timer = self.focus_timer = None
         self.root.attributes("-fullscreen", False)
         self.root.configure(cursor="")
         detail = "".join(traceback.format_exception(exc_type, exc, tb))
