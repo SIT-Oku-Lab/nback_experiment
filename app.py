@@ -21,6 +21,7 @@ from engine import (BACKGROUND, FIXATION, GRID, STIMULUS, INTERVALS, VERSION,
                     Config, accepts_response, classify, make_sequence, scheduled_index, summarize)
 from storage import Recorder, utc_iso
 from windows_touch import WindowsTouchPolicy
+from native_touch import WindowsTouchInput
 
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 ORDERS = {"0-back → 2-back": (0, 2), "2-back → 0-back": (2, 0),
@@ -68,6 +69,7 @@ class App:
         self.key_down = False
         self.pointer_down = False
         self.pointer_action = None
+        self.pointer_source = None
         self.touch_regions = {}
         self.abort_timer = None
         self.response_feedback_timer = None
@@ -78,6 +80,7 @@ class App:
         self.session_display = None
         self.display_changed = False
         self.touch_policy = None
+        self.native_touch = None
         self.block_index = 0
         self.current_index = -1
         self.current = None
@@ -113,6 +116,9 @@ class App:
         self.show_setup()
 
     def clear(self):
+        if self.native_touch is not None:
+            self.native_touch.stop()
+            self.native_touch = None
         if self.touch_policy is not None:
             self.touch_policy.restore()
             self.touch_policy = None
@@ -397,16 +403,19 @@ class App:
                                           "grid_size_px": 360, "gap_px": 8})
         self.rec.metadata["input"] = {
             "mode": self.config.input_mode,
-            "response_time_definition": "monotonic timestamp at input-handler entry; not physical contact time",
-            "pointer_event": "Tk ButtonPress-1; touch and mouse are indistinguishable" if self.config.input_mode == "touch" else None,
+            "response_time_definition": "monotonic native-contact callback or Tk-handler entry; not physical contact time",
+            "pointer_event": "WM_POINTERDOWN primary contacts; Tk mouse/pen fallback" if self.config.input_mode == "touch" else None,
         }
         if self.config.input_mode == "touch":
             self.touch_policy = WindowsTouchPolicy()
             windows_touch = self.touch_policy.install(self.root, self.canvas)
+            self.native_touch = WindowsTouchInput(self.root, self.canvas, self.on_native_contact)
+            native_touch = self.native_touch.install()
             self.rec.metadata["input"].update(
                 task_regions=self.touch_layout(*self.session_display[:2], "task"), abort_hold_ms=1500,
                 abort_move_margin_px=ABORT_MOVE_MARGIN, abort_outside_grace_ms=250,
                 windows_touch=windows_touch,
+                native_touch=native_touch,
                 response_feedback={"kind": "grayscale_press", "minimum_ms": 150, "depends_on_scoring": False})
         self.rec.save_metadata()
         if self.config.input_mode == "touch":
@@ -672,11 +681,14 @@ class App:
             else:
                 reason = "outside_response_window"
         details = {"input_mode": source, "tk_event_time_ms": getattr(event, "time", None)}
+        if getattr(event, "input_source", None) == "wm_pointer":
+            details.update(input_source="wm_pointer", contact_id=event.contact_id,
+                           native_event_time_ms=event.time, tk_event_time_ms=None)
         if source == "keyboard":
             details["key"] = "space"
         else:
             x, y = self.pointer_position(event)
-            details.update(x=x, y=y)
+            details.update(x=x, y=y, input_source=getattr(event, "input_source", "tk_pointer"))
         self.rec.event("response" if accepted else "response_ignored", at, block=self.block_index + 1,
                        trial=trial_number, reason=reason, **details)
         return "break"
@@ -761,10 +773,39 @@ class App:
     def touch_action_at(self, x, y):
         return next((action for action, (l, t, r, b) in self.touch_regions.items() if l <= x < r and t <= y < b), None)
 
+    @staticmethod
+    def contact_time(event):
+        return event.perf_ns if event is not None and hasattr(event, "perf_ns") else time.perf_counter_ns()
+
+    def on_native_contact(self, kind, event):
+        if not self.active:
+            return
+        if kind == "down":
+            self.on_pointer_press(event)
+        elif kind == "move":
+            self.on_pointer_motion(event)
+        elif kind == "up":
+            self.on_pointer_release(event)
+        elif kind == "cancel":
+            self.cancel_abort_hold("contact_cancelled", event.perf_ns)
+            self.on_pointer_release()
+        elif kind == "error":
+            self.rec.event("touch_input_error", event.perf_ns, message=event.message)
+            self.abort("touch_input_error")
+
+    def duplicate_mouse_contact(self, event):
+        if event is None or getattr(event, "input_source", None) == "wm_pointer":
+            return False
+        native = getattr(self, "native_touch", None)
+        return ((self.pointer_down and self.pointer_source == "wm_pointer")
+                or (native is not None and native.primary_id is not None))
+
     def on_pointer_press(self, event):
-        at = time.perf_counter_ns()
+        at = self.contact_time(event)
         if not self.active or self.config.input_mode != "touch":
             return
+        if self.duplicate_mouse_contact(event):
+            return "break"
         x, y = self.pointer_position(event)
         action = self.touch_action_at(x, y)
         if self.pointer_down:
@@ -773,7 +814,11 @@ class App:
             return "break"
         self.pointer_down = True
         self.pointer_action = action
-        self.canvas.grab_set()
+        self.pointer_source = getattr(event, "input_source", "tk_pointer")
+        # WM_POINTER already retains the contact. A Tk mouse grab can synthesize an
+        # immediate mouse release because Tk never saw a matching mouse press.
+        if self.pointer_source != "wm_pointer":
+            self.canvas.grab_set()
         if action == "start":
             self.start_from_instruction()
         elif action == "response":
@@ -784,13 +829,17 @@ class App:
             self.abort_hold_start = at
             self.abort_outside_since = None
             self.rec.event("abort_hold_start", at, phase=self.phase, required_ms=1500, x=x, y=y,
+                           input_source=getattr(event, "input_source", "tk_pointer"),
+                           contact_id=getattr(event, "contact_id", None),
                            move_margin_px=ABORT_MOVE_MARGIN, outside_grace_ms=250)
-            self.paint_abort_hold(1.5)
+            self.paint_abort_hold(max(0, (ABORT_HOLD_NS - (time.perf_counter_ns() - at)) / 1e9))
             self.abort_timer = self.root.after(100, self.complete_abort_hold)
         return "break"
 
     def on_pointer_release(self, event=None):
-        at = time.perf_counter_ns()
+        if self.active and self.duplicate_mouse_contact(event):
+            return "break"
+        at = self.contact_time(event)
         if self.active and self.pointer_action == "abort" and self.abort_hold_start is not None:
             # A released contact may arrive before an overdue after() callback.
             inside = self.abort_outside_since is None
@@ -804,6 +853,7 @@ class App:
             self.cancel_abort_hold("released_early" if inside and not expired_outside else "moved_outside", at)
         self.pointer_down = False
         self.pointer_action = None
+        self.pointer_source = None
         self.release_response_feedback()
         self.cancel_abort_hold()
         if self.canvas is not None and self.canvas.grab_current() == self.canvas:
@@ -811,7 +861,9 @@ class App:
         return "break" if self.active and self.config.input_mode == "touch" else None
 
     def on_pointer_motion(self, event):
-        at = time.perf_counter_ns()
+        if self.active and self.duplicate_mouse_contact(event):
+            return "break"
+        at = self.contact_time(event)
         if self.active and self.pointer_action == "abort" and self.abort_hold_start is not None:
             inside = self.abort_retains_contact(*self.pointer_position(event))
             if self.abort_outside_since is not None and at - self.abort_outside_since >= ABORT_OUTSIDE_GRACE_NS:
@@ -935,6 +987,7 @@ class App:
         self.label(f, f"参加者：{self.config.participant}    モード：{mode}").pack(anchor="w")
         if reason:
             reasons = {"escape": "Escキー", "focus_lost": "課題画面からフォーカスが外れたため",
+                       "touch_input_error": "Windowsタッチ入力の受信エラー",
                        "touch_hold": "中止ボタンの長押し", "display_changed": "画面の向き・表示領域・倍率が変更されたため",
                        "display_unsupported": "タッチ操作の画面条件を満たしていないため",
                        "window_closed": "ウィンドウを閉じたため", "lsl_send_failed": "LSL送出エラー", "error": "アプリケーションエラー",

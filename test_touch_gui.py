@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import sys
+import ctypes as ct
 import tkinter as tk
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,7 @@ from app import App
 from engine import Config
 from storage import Recorder
 from windows_touch import FLAGS, PROPERTY
+from native_touch import WM_POINTERDOWN, PRIMARY, SUBCLASS_ID
 
 
 class TkTouchTests(unittest.TestCase):
@@ -209,6 +211,35 @@ class TkTouchTests(unittest.TestCase):
         self.root.mainloop()
         self.assertFalse(self.app.active)
         self.assertEqual(self.app.rec.metadata["reason"], "touch_hold")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows-specific native touch path")
+    def test_native_touch_down_starts_countdown_and_completes_without_motion(self):
+        bridge = self.app.native_touch
+        self.assertTrue(self.app.rec.metadata["input"]["native_touch"]["applied"])
+        l, t, r, b = self.app.touch_regions["abort"]
+        x = self.app.canvas.winfo_rootx() + int((l + r) / 2)
+        y = self.app.canvas.winfo_rooty() + int((t + b) / 2)
+        def decode(pointer_id, pointer_type):
+            pointer_type._obj.value = 2
+            return True
+        query = bridge.common.GetWindowSubclass
+        query.argtypes = (ct.c_void_p, type(bridge.proc), ct.c_size_t, ct.POINTER(ct.c_size_t))
+        query.restype = ct.c_int
+        reference = ct.c_size_t()
+        self.assertTrue(query(bridge.hwnd, bridge.proc, SUBCLASS_ID, ct.byref(reference)))
+        with patch.object(bridge.user, "GetPointerType", side_effect=decode) as decoded:
+            # Invoke the installed C callback with a test contact, without any MOVE.
+            bridge.proc(bridge.hwnd, WM_POINTERDOWN, ((PRIMARY | 4) << 16) | 42,
+                        ((y & 0xFFFF) << 16) | (x & 0xFFFF), SUBCLASS_ID, 0)
+            self.assertTrue(decoded.called)
+        observed = []
+        self.root.after(50, lambda: observed.append(self.app.abort_hold_start is not None))
+        self.root.after(1700, self.root.quit)
+        self.root.mainloop()
+        self.assertEqual(observed, [True], str(self.app.rec.metadata))
+        self.assertFalse(self.app.active)
+        self.assertEqual(self.app.rec.metadata["reason"], "touch_hold")
+        self.assertTrue(bridge.closed)
 
     def test_keyboard_mode_starts_with_enter_and_keeps_canvas_without_controls(self):
         self.app.config = replace(self.app.config, input_mode="keyboard")

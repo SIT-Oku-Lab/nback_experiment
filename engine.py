@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 import math
 import random
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 BACKGROUND = "#808080"
 GRID = "#737373"
 STIMULUS = "#bfbfbf"

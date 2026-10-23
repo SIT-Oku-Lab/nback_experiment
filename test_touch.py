@@ -62,6 +62,7 @@ class InputTests(unittest.TestCase):
         app.root = ControlRoot()
         app.pointer_down = False
         app.pointer_action = None
+        app.pointer_source = None
         app.abort_timer = None
         app.response_feedback_timer = None
         app.response_feedback_until = None
@@ -266,6 +267,43 @@ class InputTests(unittest.TestCase):
                 app.on_pointer_release(types.SimpleNamespace(x=900, y=50))
             self.assertFalse(app.active)
             self.assertEqual(app.rec.metadata["reason"], "touch_hold")
+
+    def test_native_hold_starts_on_down_and_ignores_compatibility_mouse_release(self):
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as cleanup:
+            app = self.make_app(folder)
+            cleanup.callback(app.rec.finish, "aborted")
+            self.use_real_finish(app)
+            at = app.block_start + 100_000_000
+            down = types.SimpleNamespace(x=900, y=50, perf_ns=at, input_source="wm_pointer", contact_id=42, time=100)
+            with patch("app.time.perf_counter_ns", return_value=at + 20_000_000):
+                app.on_native_contact("down", down)
+            self.assertEqual(app.abort_hold_start, at)
+            self.assertFalse(app.canvas.grabbed)  # Windows owns the contact capture.
+            app.on_pointer_release(types.SimpleNamespace(x=900, y=50, time=150))
+            self.assertEqual(app.abort_hold_start, at)
+            up = types.SimpleNamespace(x=900, y=50, perf_ns=at + 1_500_000_000,
+                                       input_source="wm_pointer", contact_id=42, time=1600)
+            with patch("app.time.perf_counter_ns", return_value=up.perf_ns + 20_000_000):
+                app.on_native_contact("up", up)
+            self.assertFalse(app.active)
+            self.assertEqual(app.rec.metadata["reason"], "touch_hold")
+
+    def test_native_response_preserves_receipt_timestamp_and_input_identity(self):
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as cleanup:
+            app = self.make_app(folder)
+            cleanup.callback(app.rec.finish, "aborted")
+            at = app.block_start + 100_000_000
+            event = types.SimpleNamespace(x=512, y=700, perf_ns=at, input_source="wm_pointer", contact_id=42, time=100)
+            with patch("app.time.perf_counter_ns", return_value=at + 150_000_000):
+                app.on_native_contact("down", event)
+            self.assertEqual(app.current["response"], at)
+            detail = json.loads(self.events(app)[-1]["detail_json"])
+            self.assertEqual(detail["input_source"], "wm_pointer")
+            self.assertEqual(detail["contact_id"], 42)
+            self.assertIsNone(detail["tk_event_time_ms"])
+            count = len(self.events(app))
+            app.on_pointer_press(types.SimpleNamespace(x=512, y=700, time=200))
+            self.assertEqual(len(self.events(app)), count)
 
     def test_late_release_far_outside_does_not_complete_hold(self):
         with tempfile.TemporaryDirectory() as folder, ExitStack() as cleanup:
