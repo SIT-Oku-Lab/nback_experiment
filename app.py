@@ -27,6 +27,9 @@ ORDERS = {"0-back → 2-back": (0, 2), "2-back → 0-back": (2, 0),
           "0-back のみ": (0,), "2-back のみ": (2,)}
 POSITIONS = ("1 左上", "2 上", "3 右上", "4 左", "5 中央", "6 右", "7 左下", "8 下", "9 右下")
 INPUT_MODES = {"タッチ": "touch", "キーボード": "keyboard"}
+ABORT_HOLD_NS = 1_500_000_000
+ABORT_MOVE_MARGIN = 32
+ABORT_OUTSIDE_GRACE_NS = 250_000_000
 
 
 class App:
@@ -71,6 +74,7 @@ class App:
         self.response_feedback_until = None
         self.focus_timer = None
         self.abort_hold_start = None
+        self.abort_outside_since = None
         self.session_display = None
         self.display_changed = False
         self.touch_policy = None
@@ -401,6 +405,7 @@ class App:
             windows_touch = self.touch_policy.install(self.root, self.canvas)
             self.rec.metadata["input"].update(
                 task_regions=self.touch_layout(*self.session_display[:2], "task"), abort_hold_ms=1500,
+                abort_move_margin_px=ABORT_MOVE_MARGIN, abort_outside_grace_ms=250,
                 windows_touch=windows_touch,
                 response_feedback={"kind": "grayscale_press", "minimum_ms": 150, "depends_on_scoring": False})
         self.rec.save_metadata()
@@ -688,7 +693,7 @@ class App:
 
     @staticmethod
     def touch_layout(width, height, phase):
-        regions = {"abort": (width - 224, 24, width - 24, 84)}
+        regions = {"abort": (width - 284, 24, width - 24, 112)}
         if phase in ("ready", "task"):
             regions["start" if phase == "ready" else "response"] = (width / 2 - 160, height - 124, width / 2 + 160, height - 24)
         return regions
@@ -708,13 +713,16 @@ class App:
                                     fill="#ededed", font=("Yu Gothic UI", -18 if action == "abort" else -26, "bold"),
                                     tags=("touch-control", action + "-label"))
         if self.abort_hold_start is not None:
-            self.paint_abort_hold(max(0, 1.5 - (time.perf_counter_ns() - self.abort_hold_start) / 1e9))
+            self.paint_abort_hold(max(0, (ABORT_HOLD_NS - (time.perf_counter_ns() - self.abort_hold_start)) / 1e9))
 
     def paint_abort_hold(self, remaining=None):
         if self.canvas is not None:
+            # Do not show 0.0 while the 1.5-second threshold has not been reached.
+            shown = math.ceil(max(0, remaining) * 10) / 10 if remaining is not None else None
             self.canvas.itemconfigure("abort-face", fill="#bfbfbf" if remaining is not None else "#707070")
             self.canvas.itemconfigure("abort-label", fill="#262b2a" if remaining is not None else "#ededed",
-                                      text=f"中止まで {remaining:.1f} 秒" if remaining is not None else "長押しで中止")
+                                      text=("指をボタンへ戻す" if self.abort_outside_since is not None else f"中止まで {shown:.1f} 秒")
+                                      if remaining is not None else "長押しで中止")
 
     def paint_response_feedback(self, pressed):
         if self.canvas is not None:
@@ -774,12 +782,26 @@ class App:
             self.respond("touch", event, at)
         elif action == "abort":
             self.abort_hold_start = at
-            self.rec.event("abort_hold_start", at, phase=self.phase, required_ms=1500)
+            self.abort_outside_since = None
+            self.rec.event("abort_hold_start", at, phase=self.phase, required_ms=1500, x=x, y=y,
+                           move_margin_px=ABORT_MOVE_MARGIN, outside_grace_ms=250)
             self.paint_abort_hold(1.5)
             self.abort_timer = self.root.after(100, self.complete_abort_hold)
         return "break"
 
     def on_pointer_release(self, event=None):
+        at = time.perf_counter_ns()
+        if self.active and self.pointer_action == "abort" and self.abort_hold_start is not None:
+            # A released contact may arrive before an overdue after() callback.
+            inside = self.abort_outside_since is None
+            if event is not None and (hasattr(event, "x") or hasattr(event, "x_root")):
+                inside = self.abort_retains_contact(*self.pointer_position(event))
+            expired_outside = (self.abort_outside_since is not None
+                               and at - self.abort_outside_since >= ABORT_OUTSIDE_GRACE_NS)
+            if inside and not expired_outside and at - self.abort_hold_start >= ABORT_HOLD_NS:
+                self.finish_abort_hold(at, "release")
+                return "break"
+            self.cancel_abort_hold("released_early" if inside and not expired_outside else "moved_outside", at)
         self.pointer_down = False
         self.pointer_action = None
         self.release_response_feedback()
@@ -789,28 +811,60 @@ class App:
         return "break" if self.active and self.config.input_mode == "touch" else None
 
     def on_pointer_motion(self, event):
-        if self.active and self.pointer_action == "abort" and self.touch_action_at(*self.pointer_position(event)) != "abort":
-            self.cancel_abort_hold()
-            self.pointer_action = None
+        at = time.perf_counter_ns()
+        if self.active and self.pointer_action == "abort" and self.abort_hold_start is not None:
+            inside = self.abort_retains_contact(*self.pointer_position(event))
+            if self.abort_outside_since is not None and at - self.abort_outside_since >= ABORT_OUTSIDE_GRACE_NS:
+                self.cancel_abort_hold("moved_outside", at)
+            elif inside:
+                self.abort_outside_since = None
+            elif self.abort_outside_since is None:
+                self.abort_outside_since = at
+                self.rec.event("abort_hold_outside", at, phase=self.phase,
+                               x=self.pointer_position(event)[0], y=self.pointer_position(event)[1])
         return "break" if self.active and self.config.input_mode == "touch" else None
 
-    def cancel_abort_hold(self):
+    def abort_retains_contact(self, x, y):
+        bounds = self.touch_regions.get("abort")
+        if bounds is None:
+            return False
+        l, t, r, b = bounds
+        return (max(0, l - ABORT_MOVE_MARGIN) <= x < min(self.canvas.winfo_width(), r + ABORT_MOVE_MARGIN)
+                and max(0, t - ABORT_MOVE_MARGIN) <= y < min(self.canvas.winfo_height(), b + ABORT_MOVE_MARGIN))
+
+    def cancel_abort_hold(self, reason=None, at=None):
+        if reason is not None and self.abort_hold_start is not None:
+            at = time.perf_counter_ns() if at is None else at
+            self.rec.event("abort_hold_cancelled", at, phase=self.phase, reason=reason,
+                           elapsed_ms=(at - self.abort_hold_start) / 1e6)
         if self.abort_timer is not None:
             self.root.after_cancel(self.abort_timer)
             self.abort_timer = None
         self.abort_hold_start = None
+        self.abort_outside_since = None
         self.paint_abort_hold()
+
+    def finish_abort_hold(self, at, trigger):
+        self.rec.event("abort_hold_completed", at, phase=self.phase, trigger=trigger,
+                       elapsed_ms=(at - self.abort_hold_start) / 1e6)
+        self.cancel_abort_hold()
+        self.abort("touch_hold")
 
     def complete_abort_hold(self):
         self.abort_timer = None
         if not self.active or not self.pointer_down or self.pointer_action != "abort" or self.abort_hold_start is None:
             return
-        remaining = 1_500_000_000 - (time.perf_counter_ns() - self.abort_hold_start)
-        if remaining > 0:
-            self.paint_abort_hold(remaining / 1e9)
-            self.abort_timer = self.root.after(min(100, math.ceil(remaining / 1e6)), self.complete_abort_hold)
+        at = time.perf_counter_ns()
+        if self.abort_outside_since is not None and at - self.abort_outside_since >= ABORT_OUTSIDE_GRACE_NS:
+            self.cancel_abort_hold("moved_outside", at)
+            return
+        remaining = ABORT_HOLD_NS - (at - self.abort_hold_start)
+        if remaining > 0 or self.abort_outside_since is not None:
+            self.paint_abort_hold(max(0, remaining / 1e9))
+            delay = min(100, math.ceil(remaining / 1e6)) if remaining > 0 else 100
+            self.abort_timer = self.root.after(delay, self.complete_abort_hold)
         else:
-            self.abort("touch_hold")
+            self.finish_abort_hold(at, "timer")
 
     def display_signature(self):
         return (self.canvas.winfo_width(), self.canvas.winfo_height(), self.root.winfo_screenwidth(),

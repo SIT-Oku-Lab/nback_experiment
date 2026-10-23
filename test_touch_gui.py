@@ -190,10 +190,25 @@ class TkTouchTests(unittest.TestCase):
         self.click("abort", release=False)
         self.assertEqual(self.app.canvas.itemcget("abort-face", "fill"), "#bfbfbf")
         self.app.canvas.event_generate("<B1-Motion>", x=0, y=0)
+        self.root.after(400, self.root.quit)
+        self.root.mainloop()
         self.assertIsNone(self.app.abort_timer)
         self.assertEqual(self.app.canvas.itemcget("abort-label", "text"), "長押しで中止")
         self.assertTrue(self.app.active)
         self.app.canvas.event_generate("<ButtonRelease-1>", x=0, y=0)
+
+    def test_abort_countdown_never_shows_zero_before_threshold(self):
+        self.app.paint_abort_hold(0.049)
+        self.assertIn("0.1 秒", self.app.canvas.itemcget("abort-label", "text"))
+
+    def test_actual_tk_hold_survives_one_pixel_outside_visual_button(self):
+        self.click("abort", release=False)
+        l, t, r, b = self.app.touch_regions["abort"]
+        self.app.canvas.event_generate("<B1-Motion>", x=int(l - 1), y=int((t + b) / 2))
+        self.root.after(1700, self.root.quit)
+        self.root.mainloop()
+        self.assertFalse(self.app.active)
+        self.assertEqual(self.app.rec.metadata["reason"], "touch_hold")
 
     def test_keyboard_mode_starts_with_enter_and_keeps_canvas_without_controls(self):
         self.app.config = replace(self.app.config, input_mode="keyboard")

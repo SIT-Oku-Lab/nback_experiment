@@ -1,5 +1,6 @@
 """Input regression tests using the real recorder and deterministic scheduler."""
 from dataclasses import replace
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import tempfile
@@ -66,6 +67,7 @@ class InputTests(unittest.TestCase):
         app.response_feedback_until = None
         app.focus_timer = None
         app.abort_hold_start = None
+        app.abort_outside_since = None
         app.timer = None
         app.session_display = app.display_signature()
         app.render_touch_controls()
@@ -239,6 +241,43 @@ class InputTests(unittest.TestCase):
             self.assertFalse(app.canvas.grabbed)
             self.assertIsNone(app.abort_timer)
 
+    def test_abort_hold_survives_one_pixel_motion_past_button_edge(self):
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as cleanup:
+            app = self.make_app(folder)
+            cleanup.callback(app.rec.finish, "aborted")
+            self.use_real_finish(app)
+            l, t, r, b = app.touch_regions["abort"]
+            self.press(app, 100, x=l + 2, y=(t + b) / 2)
+            with patch("app.time.perf_counter_ns", return_value=app.block_start + 500_000_000):
+                app.on_pointer_motion(types.SimpleNamespace(x=l - 1, y=(t + b) / 2))
+            self.assertIsNotNone(app.abort_hold_start)
+            with patch("app.time.perf_counter_ns", return_value=app.block_start + 1_600_000_000):
+                app.complete_abort_hold()
+            self.assertEqual(app.rec.metadata["reason"], "touch_hold")
+
+    def test_release_after_threshold_completes_even_before_delayed_timer(self):
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as cleanup:
+            app = self.make_app(folder)
+            cleanup.callback(app.rec.finish, "aborted")
+            self.use_real_finish(app)
+            self.press(app, 100, x=900, y=50)
+            # No timer callback has run; the GUI may process release before the overdue timer.
+            with patch("app.time.perf_counter_ns", return_value=app.block_start + 1_600_000_000):
+                app.on_pointer_release(types.SimpleNamespace(x=900, y=50))
+            self.assertFalse(app.active)
+            self.assertEqual(app.rec.metadata["reason"], "touch_hold")
+
+    def test_late_release_far_outside_does_not_complete_hold(self):
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as cleanup:
+            app = self.make_app(folder)
+            cleanup.callback(app.rec.finish, "aborted")
+            self.press(app, 100, x=900, y=50)
+            with patch("app.time.perf_counter_ns", return_value=app.block_start + 1_800_000_000):
+                app.on_pointer_release(types.SimpleNamespace(x=500, y=500))
+            self.assertTrue(app.active)
+            self.assertIsNone(app.abort_hold_start)
+            self.assertEqual(json.loads(self.events(app)[-1]["detail_json"])["reason"], "moved_outside")
+
     def test_abort_hold_cancels_on_release_or_leaving_area(self):
         with tempfile.TemporaryDirectory() as folder:
             app = self.make_app(folder)
@@ -247,6 +286,9 @@ class InputTests(unittest.TestCase):
                 self.press(app, 100, x=900, y=50)
                 timer = app.abort_timer
                 cancel()
+                app.root.callbacks.pop(timer, None)  # The real Tk loop consumes a fired callback.
+                with patch("app.time.perf_counter_ns", return_value=app.block_start + 20_000_000_000):
+                    app.complete_abort_hold()
                 self.assertNotIn(timer, app.root.callbacks)
                 self.assertIsNone(app.abort_hold_start)
                 with patch("app.time.perf_counter_ns", return_value=app.block_start + 2_000_000_000):
@@ -254,6 +296,53 @@ class InputTests(unittest.TestCase):
                 self.assertTrue(app.active)
                 app.on_pointer_release()
             app.rec.finish("aborted")
+
+    def test_brief_outside_motion_preserves_hold_but_cannot_complete_outside(self):
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as cleanup:
+            app = self.make_app(folder)
+            cleanup.callback(app.rec.finish, "aborted")
+            self.use_real_finish(app)
+            self.press(app, 100, x=900, y=50)
+            at = app.block_start
+            with patch("app.time.perf_counter_ns", return_value=at + 1_500_000_000):
+                app.on_pointer_motion(types.SimpleNamespace(x=500, y=500))
+            with patch("app.time.perf_counter_ns", return_value=at + 1_600_000_000):
+                app.complete_abort_hold()
+                self.assertTrue(app.active)
+                app.on_pointer_motion(types.SimpleNamespace(x=900, y=50))
+                app.complete_abort_hold()
+            self.assertFalse(app.active)
+            self.assertEqual(app.rec.metadata["reason"], "touch_hold")
+
+    def test_long_outside_motion_is_cancelled_even_if_timer_has_not_run(self):
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as cleanup:
+            app = self.make_app(folder)
+            cleanup.callback(app.rec.finish, "aborted")
+            self.press(app, 100, x=900, y=50)
+            with patch("app.time.perf_counter_ns", return_value=app.block_start + 200_000_000):
+                app.on_pointer_motion(types.SimpleNamespace(x=500, y=500))
+            with patch("app.time.perf_counter_ns", return_value=app.block_start + 500_000_000):
+                app.on_pointer_motion(types.SimpleNamespace(x=900, y=50))
+            self.assertIsNone(app.abort_hold_start)
+            detail = json.loads(self.events(app)[-1]["detail_json"])
+            self.assertEqual(detail["reason"], "moved_outside")
+            self.assertEqual(detail["elapsed_ms"], 400)
+
+    def test_hold_cannot_start_outside_button_and_early_release_cancels(self):
+        with tempfile.TemporaryDirectory() as folder, ExitStack() as cleanup:
+            app = self.make_app(folder)
+            cleanup.callback(app.rec.finish, "aborted")
+            l, t, r, b = app.touch_regions["abort"]
+            self.press(app, 100, x=l - 1, y=50)
+            self.assertIsNone(app.abort_hold_start)
+            app.on_pointer_release()
+            self.press(app, 100, x=900, y=50)
+            with patch("app.time.perf_counter_ns", return_value=app.block_start + 1_599_000_000):
+                app.on_pointer_release(types.SimpleNamespace(x=900, y=50))
+            self.assertTrue(app.active)
+            detail = json.loads(self.events(app)[-1]["detail_json"])
+            self.assertEqual(detail["reason"], "released_early")
+            self.assertEqual(detail["elapsed_ms"], 1499)
 
     def test_focus_loss_and_display_change_abort_and_preserve_recording(self):
         for change in ("focus", "size", "scaling"):

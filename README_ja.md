@@ -1,14 +1,14 @@
 # 空間 n-back 簡易実験
 
 Windows向けのオフラインGUIです。0-backと2-backをそれぞれ**600秒（10分）**実施します。
-v1.2.1では、Windowsタブレットのタッチ操作に対応し、開始前にタッチ／キーボードを選択できます。長押し中止とWindowsの右クリック認識との干渉を抑制しています。
+v1.2.2では、Windowsタブレットのタッチ操作に対応し、開始前にタッチ／キーボードを選択できます。長押し中止の指のずれとタイマー配送の遅延に対応しています。
 BITalinoの計測をOpenSignalsで行い、本アプリがLSLで生理信号を直接受信します。
 **刺激1回ごとの試行終了後、および0-back・2-backそれぞれの課題終了後に、生理信号を自動保存します。LabRecorderは不要です。**
 
 ## 起動
 
 **`launch.cmd`をダブルクリック**してください。配布版があれば、Python不要の
-`dist/v1.2.1/NBackExperiment/NBackExperiment.exe`が起動します。
+`dist/v1.2.2/NBackExperiment/NBackExperiment.exe`が起動します。
 このフォルダを移動するときは、exeだけでなく`_internal`を含むフォルダ全体を移動してください。
 ZIP配布版では、展開した`NBackExperiment`フォルダ内の`NBackExperiment.exe`を直接起動してください。
 
@@ -25,7 +25,7 @@ python -m pip install -r requirements-optional.txt
 ```
 
 配布版にはpylslとliblslが含まれます。OpenSignalsは別途用意してください。
-旧版の実行ファイルと記録はそのまま残しています。`launch.cmd`はv1.2.1がなければPythonのソース版を起動します。
+旧版の実行ファイルと記録はそのまま残しています。`launch.cmd`はv1.2.2がなければPythonのソース版を起動します。
 旧版exeへの自動フォールバックは行いません。GitHubのソースには配布exe・ZIPを含めないため、ソースから起動するか再ビルドしてください。
 
 ## 実施手順
@@ -64,7 +64,7 @@ python -m pip install -r requirements-optional.txt
 - 指が触れた際のTk左ボタン押下イベントで応答します。指を離した時刻ではありません。領域外から滑らせて入れる操作は応答になりません。
 - 指を置いたまま次の試行になっても再応答しません。開始に使った指も一度離してください。同じ試行での2回目以降の応答は採点に反映しません。
 - 「一致」に触れるとボタンが明るくなり、文字が暗くなります。押下中は強調を保ち、短いタップでも押下から最低150 ms表示します。正誤・採点対象外・同じ試行への再タップにかかわらず同じ表示となり、操作への反応を示します。音や正誤表示はありません。
-- 右上の「長押しで中止」に1.5秒触れ続けると、中止して記録を確定します。接触中はボタンが明るくなり、「中止まで○秒」と残り時間を表示します。途中で離すか領域外へ動かすと取り消します。長押し中も実験時間は進みます。Escでの実験者の緊急中止も使えます。
+- 右上の「長押しで中止」に1.5秒触れ続けると、中止して記録を確定します。ボタンは260×88のTk座標単位です。接触中はボタンが明るくなり、「中止まで○秒」と残り時間を表示します。指のずれはボタン外32まで許容し、さらに外れた場合も250 ms未満で戻れば継続します。外れている間は「指をボタンへ戻す」と表示し、中止を成立させません。1.5秒未満で指を離す、許容範囲から250 ms以上外れる、許容範囲外で指を離す場合は取り消します。長押し中も実験時間は進みます。Escでの実験者の緊急中止も使えます。
 - 入力方式はセッション開始後に変更できません。タッチ方式のSpace・Enter、キーボード方式の画面タップは課題応答・説明送りに使えません。
 - 設定入力は実験者が従来どおり行います。iPad・Android、複数指ジェスチャーは対応範囲に含みません。
 
@@ -80,10 +80,11 @@ RTは押下ハンドラ冒頭の単調時計と刺激描画完了時刻との差
 v1.2.1では課題画面のCanvasと親ウィンドウに `MicrosoftTabletPenServiceProperty` を設定し、Windowsの「長押しを右クリックに変換する」処理とフリック認識を無効にします。
 Windowsが左ボタン押下を遅らせると、従来の1.5秒タイマーが開始できない可能性があるためです。
 設定はアプリの課題画面内だけに適用し、終了時に元へ戻します。Windows全体のタッチ設定やレジストリは変更しません。
-設定の適用結果は `session.json` の `input.windows_touch`、長押し開始は `events.csv` / `events.jsonl` の `abort_hold_start` に記録します。
+設定の適用結果は `session.json` の `input.windows_touch` に記録します。`events.csv` / `events.jsonl` に長押しの開始（`abort_hold_start`）、許容範囲外への移動（`abort_hold_outside`）、成立（`abort_hold_completed`）、取消（`abort_hold_cancelled`）を残します。取消イベントには理由（`released_early` / `moved_outside`）と経過時間、成立イベントには判定元（`timer` / `release`）を記録します。
 設定に失敗した場合はエラーとして停止し、未適用のまま課題を開始しません。
 
-更新後は旧アプリを閉じ、v1.2.1を起動してください。まず「動作確認」で「中止まで○秒」が表示され、中止・保存されることを確認してください。
+v1.2.2では、ボタン外へ1px動くだけで即時取消となる実装と、タイマー通知前に指を離すと1.5秒経過済みでも取消となる実装を修正しました。また、成立前に「0.0秒」と表示しないよう、残り時間を切り上げます。指を離した時点でも実際の経過時間を判定します。
+更新後は旧アプリを閉じ、v1.2.2を起動してください。まず「動作確認」で「中止まで○秒」が表示され、中止・保存されることを確認してください。
 報告端末のSurface Pro 12in 1st Ed with Snapdragonでの物理タッチ検証は未実施です。Windows APIのハンドルはポインタ幅で扱い、64bitプロセスでの切り詰めを防いでいます。
 実装根拠: [Microsoftのシステムジェスチャー仕様](https://learn.microsoft.com/en-us/windows/win32/tablet/wm-tablet-querysystemgesturestatus-message)。
 
@@ -252,7 +253,7 @@ python build_windows.py
 python package_windows.py
 ```
 
-ビルド・梱包先は `engine.VERSION` に合わせます。生成先は `dist/v1.2.1/NBackExperiment/`、ZIPは `NBackExperiment_Windows.zip`、照合値は `NBackExperiment_Windows.sha256` です。
+ビルド・梱包先は `engine.VERSION` に合わせます。生成先は `dist/v1.2.2/NBackExperiment/`、ZIPは `NBackExperiment_Windows.zip`、照合値は `NBackExperiment_Windows.sha256` です。
 
 `verify_physiology.py`は実デバイスに接続せず、1000 Hz・6チャンネルの合成LSL信号で保存と受信停止検出を確認します。
 本アプリのコードは参考サイトのソースを転用していません。配布版の第三者ライブラリのライセンスは`licenses`を参照してください。
