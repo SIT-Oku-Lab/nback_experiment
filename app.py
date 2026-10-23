@@ -25,6 +25,7 @@ APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path
 ORDERS = {"0-back → 2-back": (0, 2), "2-back → 0-back": (2, 0),
           "0-back のみ": (0,), "2-back のみ": (2,)}
 POSITIONS = ("1 左上", "2 上", "3 右上", "4 左", "5 中央", "6 右", "7 左下", "8 下", "9 右下")
+INPUT_MODES = {"タッチ": "touch", "キーボード": "keyboard"}
 
 
 class App:
@@ -59,11 +60,13 @@ class App:
         self.frame: ttk.Frame | None = None
         self.timer = None
         self.key_down = False
+        self.pointer_down = False
         self.block_index = 0
         self.current_index = -1
         self.current = None
         self.output = tk.StringVar(value=str(APP_DIR / "results"))
         self.participant = tk.StringVar(value="P001")
+        self.input_selection = tk.StringVar(value="タッチ")
         self.order = tk.StringVar(value=next(iter(ORDERS)))
         self.interval = tk.StringVar(value="3000")
         self.stimulus = tk.StringVar(value="500")
@@ -167,7 +170,8 @@ class App:
         self.label(left, "各12秒（動作確認）" if self.demo else "各10分", "Heading.TLabel").grid(row=3, column=1, sticky="w")
         self.form_row(left, 4, "開始前の安静（秒）", self.baseline, width=11)
         self.form_row(left, 5, "課題間の休憩（秒）", self.rest, width=11)
-        self.label(left, "単独課題を選んだ場合は10分です。\n練習は選択した各課題を60秒ずつ行います。", "Muted.TLabel").grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.form_row(left, 6, "入力方式", self.input_selection, tuple(INPUT_MODES), width=20)
+        self.label(left, "単独課題を選んだ場合は10分です。\n練習は選択した各課題を60秒ずつ行います。", "Muted.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.label(right, "参加者の画面", "Heading.TLabel").pack(anchor="w")
         preview = tk.Canvas(right, width=210, height=160, bg=BACKGROUND, highlightthickness=0)
         preview.pack(anchor="w", pady=(12, 10))
@@ -223,6 +227,7 @@ class App:
                          target_percent=int(self.target_percent.get()), zero_target=POSITIONS.index(self.target_position.get()),
                          baseline_s=int(self.baseline.get()), rest_s=int(self.rest.get()), seed=int(self.seed.get()),
                          mode="practice" if practice else "experiment", lsl=self.lsl_enabled.get(),
+                         input_mode=INPUT_MODES[self.input_selection.get()],
                          physiology=self.physiology_enabled.get(),
                          physiology_uid=self.streams[self.stream_selection.get()].uid() if self.stream_selection.get() in self.streams else "",
                          physiology_name=self.streams[self.stream_selection.get()].name() if self.stream_selection.get() in self.streams else "")
@@ -407,11 +412,15 @@ class App:
         self.root.update_idletasks()
 
     def on_enter(self, event=None):
+        if self.active and self.config.input_mode == "keyboard":
+            self.start_from_instruction()
+        return "break" if self.active else None
+
+    def start_from_instruction(self):
         if self.active and self.phase == "ready":
             self.rec.event("instruction_end", block=self.block_index + 1)
             self.neutral_screen()
             self.begin_phase("prepare", self.config.prepare_s)
-        return "break" if self.active else None
 
     def begin_phase(self, phase: str, seconds: float, at=None):
         self.phase = phase
@@ -559,11 +568,19 @@ class App:
         self.current_index = index
 
     def on_space(self, event):
+        at = time.perf_counter_ns()
         if not self.active:
             return
-        at = time.perf_counter_ns()
+        if self.config.input_mode != "keyboard":
+            return "break"
         repeated = self.key_down
         self.key_down = True
+        return self.respond("keyboard", event, at, repeated)
+
+    def respond(self, source, event, at, repeated=False):
+        """Use the input handler's entry timestamp, before any scheduler/redraw work."""
+        if not self.active or source != self.config.input_mode:
+            return "break" if self.active else None
         self.advance(at)
         if not self.active:
             return "break"
@@ -571,7 +588,7 @@ class App:
         reason = "outside_task"
         trial_number = None
         if repeated:
-            reason = "key_held"
+            reason = "key_held" if source == "keyboard" else "touch_held"
         elif self.phase == "task" and self.current:
             data = self.current
             trial_number = data["trial"].index + 1
@@ -585,8 +602,13 @@ class App:
                 reason = "already_responded"
             else:
                 reason = "outside_response_window"
+        details = {"input_mode": source, "tk_event_time_ms": getattr(event, "time", None)}
+        if source == "keyboard":
+            details["key"] = "space"
+        else:
+            details.update(x=getattr(event, "x", None), y=getattr(event, "y", None))
         self.rec.event("response" if accepted else "response_ignored", at, block=self.block_index + 1,
-                       trial=trial_number, key="space", reason=reason, tk_event_time_ms=getattr(event, "time", None))
+                       trial=trial_number, reason=reason, **details)
         return "break"
 
     def on_release(self, event=None):
