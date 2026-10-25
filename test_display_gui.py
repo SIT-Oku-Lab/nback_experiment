@@ -81,6 +81,55 @@ class SurfaceLayoutTests(unittest.TestCase):
                         self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(),
                                              self.root.winfo_rooty() + self.root.winfo_height())
 
+    def test_information_uses_lower_space_and_collapses_without_overflow(self):
+        for width, height, expanded in ((2196, 1314, True), (1464, 876, False), (2196, 1314, True)):
+            self.root.geometry(f"{width}x{height}+0+0")
+            self.root.update()
+            self.assertEqual(self.app.setup_information_expanded, expanded)
+            self.assertEqual(self.app.setup_scroll.yview(), (0.0, 1.0))
+            self.assert_no_horizontal_clipping()
+            canvas = self.app.setup_scroll
+            content_bounds = canvas.bbox("all")
+            self.assertEqual(content_bounds[3], canvas.winfo_height())
+            # The output row follows the growing information area at the bottom.
+            output_entry = next(w for w in self.descendants(self.app.frame)
+                                if isinstance(w, ttk.Entry) and str(w.cget("textvariable")) == str(self.app.output))
+            self.assertLessEqual(canvas.winfo_rooty() + canvas.winfo_height()
+                                 - output_entry.master.winfo_rooty() - output_entry.master.winfo_height(), 10)
+
+    def test_live_overview_and_target_preview_follow_settings_without_trace_leaks(self):
+        self.root.geometry("2196x1314+0+0")
+        self.root.update()
+        self.assertIn("21分40秒", self.app.setup_summary.get())
+        self.assertIn("練習：約2分15秒", self.app.setup_summary.get())
+        self.app.order.set("2-back のみ")
+        self.app.baseline.set("0")
+        self.app.rest.set("120")
+        self.app.input_selection.set("キーボード")
+        self.assertIn("10分05秒", self.app.setup_summary.get())
+        self.assertIn("課題間休憩なし", self.app.setup_summary.get())
+        self.assertIn("キーボード", self.app.setup_summary.get())
+        self.app.target_position.set("9 右下")
+        from engine import STIMULUS
+        preview = self.app.setup_preview
+        highlighted = [item for item in preview.find_all()
+                       if preview.type(item) == "rectangle" and preview.itemcget(item, "fill") == STIMULUS]
+        self.assertEqual(len(highlighted), 1)
+        self.assertGreater(preview.coords(highlighted[0])[0], preview.winfo_width() / 2)
+        self.assertGreater(preview.coords(highlighted[0])[1], preview.winfo_height() / 2)
+        self.app.baseline.set("")
+        self.assertIn("数値", self.app.setup_summary.get())
+        self.app.baseline.set("30")
+        self.app.demo = True
+        self.app.order.set("0-back → 2-back")
+        self.assertIn("0分28秒", self.app.setup_summary.get())
+        for _ in range(3):
+            self.app.show_setup()
+        self.assertEqual(len(self.app.order.trace_info()), 1)
+        self.assertEqual(len(self.app.target_position.trace_info()), 1)
+        self.app.clear()
+        self.assertEqual(self.app.order.trace_info(), [])
+
     def test_results_can_scroll_to_return_button_with_physiology_error(self):
         with tempfile.TemporaryDirectory() as folder:
             self.app.config = Config()
