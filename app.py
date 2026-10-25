@@ -51,10 +51,14 @@ class App:
         style.configure("TLabel", background="#eeefed", foreground="#262b2a", font=("Yu Gothic UI", 11))
         style.configure("Muted.TLabel", foreground="#606763", font=("Yu Gothic UI", 10))
         style.configure("Title.TLabel", font=("Yu Gothic UI", 25, "bold"))
+        style.configure("SetupTitle.TLabel", font=("Yu Gothic UI", 16, "bold"))
         style.configure("Heading.TLabel", font=("Yu Gothic UI", 13, "bold"))
         style.configure("TButton", font=("Yu Gothic UI", 11), padding=(16, 10))
         style.configure("Primary.TButton", foreground="#ffffff", background="#424a45", padding=(20, 13))
         style.map("Primary.TButton", background=[("active", "#303a33")])
+        style.configure("Setup.TButton", padding=(16, 7))
+        style.configure("SetupPrimary.TButton", foreground="#ffffff", background="#424a45", padding=(20, 8))
+        style.map("SetupPrimary.TButton", background=[("active", "#303a33")])
         style.configure("TCombobox", padding=5)
         style.configure("TEntry", padding=5)
         style.configure("Treeview", rowheight=tkfont.Font(family="Yu Gothic UI", size=10).metrics("linespace") + 12)
@@ -160,117 +164,114 @@ class App:
         self.root.configure(cursor="", bg="#eeefed")
         self.frame = ttk.Frame(self.root)
         self.frame.pack(fill="both", expand=True)
-        footer = ttk.Frame(self.frame, padding=(24, 12, 24, 18))
+        footer = ttk.Frame(self.frame, padding=(24, 6, 24, 10))
         footer.pack(side="bottom", fill="x")
         buttons = ttk.Frame(footer)
         buttons.pack(fill="x")
         self.start_buttons = []
-        for text, practice in (("本実験を開始" if not self.demo else "動作確認を開始", False), ("練習する（各60秒）", True)):
-            button = ttk.Button(buttons, text=text, style="TButton" if practice else "Primary.TButton", command=lambda p=practice: self.start(p))
+        for text, practice in (("動作確認を開始" if self.demo else "本実験を開始", False), ("練習（各60秒）", True)):
+            button = ttk.Button(buttons, text=text, style="Setup.TButton" if practice else "SetupPrimary.TButton",
+                                command=lambda p=practice: self.start(p))
             self.start_buttons.append(button)
-        manual_button = ttk.Button(buttons, text="手順書を開く", command=self.open_manual)
+        manual_button = ttk.Button(buttons, text="手順書", style="Setup.TButton", command=self.open_manual)
         def arrange_buttons(event):
             controls = self.start_buttons + [manual_button]
             wide = event.width >= sum(button.winfo_reqwidth() + 10 for button in controls)
             for index, button in enumerate(controls):
                 button.grid(row=0 if wide else index, column=index if wide else 0,
-                            sticky="ew", padx=(0, 10), pady=3)
+                            sticky="ew", padx=(0, 10), pady=2)
         buttons.bind("<Configure>", arrange_buttons)
-        self.label(footer, "タッチ：開始・一致ボタン／長押しで中止　　キーボード：Enter・Space・Esc\n入力方式は開始前に選択します。M：実験者の手動時刻マーカー", "Muted.TLabel").pack(anchor="w", pady=(10, 0))
+        self.label(footer, "タッチ：開始・一致／右上を長押しで中止　｜　キー：Enter・Space・Esc　｜　M：時刻マーカー",
+                   "Muted.TLabel").pack(anchor="w", pady=(4, 0))
         f = self.scroll_content(self.frame)
+        f.configure(padding=(24, 8, 24, 8))
         self.setup_scroll = self.operator_scroll
-        self.label(f, "N-BACK  /  EXPERIMENT", "Muted.TLabel").pack(anchor="w")
-        self.label(f, "空間 n-back 課題", "Title.TLabel").pack(anchor="w", pady=(3, 6))
-        self.label(f, "0-back と 2-back を、同じ刺激画面・同じ応答方法で実施します。", "Muted.TLabel").pack(anchor="w")
-        self.label(f, f"v{VERSION}  ·  OpenSignals 生理信号の同期受信・試行別保存", "Muted.TLabel").pack(anchor="w", pady=(3, 0))
+        header = ttk.Frame(f)
+        header.pack(fill="x")
+        self.label(header, "空間 n-back 課題", "SetupTitle.TLabel").pack(side="left")
+        duration = "動作確認：各12秒" if self.demo else "本実験：各10分／練習：各60秒"
+        self.label(header, f"v{VERSION}　｜　{duration}", "Muted.TLabel").pack(side="right")
+
         lsl_available = importlib.util.find_spec("pylsl") is not None
-        sensor_frame = ttk.Frame(f)
-        sensor_frame.pack(fill="x", pady=(14, 0))
-        ttk.Checkbutton(sensor_frame, text="OpenSignalsの生理信号を同期受信して自動保存する",
-                        variable=self.physiology_enabled, state="normal" if lsl_available else "disabled").pack(anchor="w")
-        stream_row = ttk.Frame(sensor_frame)
-        stream_row.pack(fill="x", pady=(7, 5))
+        sensor = ttk.Frame(f)
+        sensor.pack(fill="x", pady=(6, 8))
+        ttk.Checkbutton(sensor, text="OpenSignalsの生理信号を受信・自動保存", variable=self.physiology_enabled,
+                        state="normal" if lsl_available else "disabled").pack(anchor="w")
+        stream_row = ttk.Frame(sensor)
+        stream_row.pack(fill="x", pady=(3, 2))
         self.stream_combo = ttk.Combobox(stream_row, textvariable=self.stream_selection,
-                                        values=tuple(self.streams), width=65, state="readonly")
+                                        values=tuple(self.streams), width=30, state="readonly")
         self.stream_combo.pack(side="left", fill="x", expand=True)
-        self.discover_button = ttk.Button(stream_row, text="信号を検索", command=self.discover)
+        self.discover_button = ttk.Button(stream_row, text="信号を検索", style="Setup.TButton", command=self.discover)
         self.discover_button.pack(side="left", padx=(8, 0))
         if not lsl_available:
             self.discover_button.configure(state="disabled")
-            self.sensor_status.set("ソース版で生理信号を受信するにはpylslが必要です。配布exeには同梱されています。")
-        sensor_label = ttk.Label(sensor_frame, textvariable=self.sensor_status, style="Muted.TLabel")
+            self.sensor_status.set("信号受信にはpylslが必要です（配布exeには同梱）。")
+        sensor_label = ttk.Label(sensor, textvariable=self.sensor_status, style="Muted.TLabel")
         sensor_label.pack(anchor="w")
-        sensor_frame.bind("<Configure>", lambda e: sensor_label.configure(wraplength=max(100, e.width - 16)))
-        self.label(sensor_frame, "各刺激試行の終了後と各10分課題の終了後に自動保存します。LabRecorderは不要です。", "Muted.TLabel").pack(anchor="w", pady=(3, 0))
-        if self.demo:
-            self.label(f, "動作確認モード：各12秒。本実験データとは別に保存されます。", "Heading.TLabel").pack(anchor="w", pady=(12, 0))
-        ttk.Separator(f).pack(fill="x", pady=18)
+        sensor.bind("<Configure>", lambda e: sensor_label.configure(wraplength=max(100, e.width - 16)))
+
         columns = ttk.Frame(f)
         columns.pack(fill="x")
         left, right = ttk.Frame(columns), ttk.Frame(columns)
         left.grid(row=0, column=0, sticky="nw")
-        right.grid(row=0, column=1, sticky="nw")
+        right.grid(row=0, column=1, sticky="nw", padx=(28, 0))
         columns.columnconfigure(0, weight=1)
         columns.columnconfigure(1, weight=1)
-        self.label(left, "実施の設定", "Heading.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
-        self.form_row(left, 1, "参加者ID", self.participant)
-        self.form_row(left, 2, "課題の順序", self.order, tuple(ORDERS), width=20)
-        self.label(left, "各課題の時間").grid(row=3, column=0, sticky="w", pady=7, padx=(0, 15))
-        self.label(left, "各12秒（動作確認）" if self.demo else "各10分", "Heading.TLabel").grid(row=3, column=1, sticky="w")
-        self.form_row(left, 4, "開始前の安静（秒）", self.baseline, width=11)
-        self.form_row(left, 5, "課題間の休憩（秒）", self.rest, width=11)
-        self.form_row(left, 6, "入力方式", self.input_selection, tuple(INPUT_MODES), width=20)
-        self.label(left, "単独課題を選んだ場合は10分です。\n練習は選択した各課題を60秒ずつ行います。", "Muted.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        self.label(right, "参加者の画面", "Heading.TLabel").pack(anchor="w")
-        preview = tk.Canvas(right, width=210, height=160, bg=BACKGROUND, highlightthickness=0)
-        preview.pack(anchor="w", pady=(12, 10))
-        self.draw_grid(preview, 105, 80, 126, sample=1)
-        self.label(right, "グレー背景・固定グリッド・位置刺激のみ。\n得点、残り時間、正誤表示、効果音はありません。\nタッチ：一致ボタンに触れます。\nキーボード：Spaceキーを押します。\nタッチは横向き・表示領域1024×768以上。", "Muted.TLabel", wraplength=350).pack(anchor="w")
+        self.label(left, "実施設定", "Heading.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self.form_row(left, 1, "参加者ID", self.participant, width=18)
+        self.form_row(left, 2, "課題順序", self.order, tuple(ORDERS), width=18)
+        self.form_row(left, 3, "入力方式", self.input_selection, tuple(INPUT_MODES), width=18)
+        self.form_row(left, 4, "開始前の安静（秒）", self.baseline, width=10)
+        self.form_row(left, 5, "課題間の休憩（秒）", self.rest, width=10)
+        self.label(left, "練習：安静なし・課題間休憩5秒。\n入力方式は開始後に変更できません。", "Muted.TLabel").grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(5, 0))
+
+        self.label(right, "刺激・記録設定", "Heading.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self.form_row(right, 1, "提示間隔（ms）", self.interval, tuple(map(str, INTERVALS)), width=12)
+        self.form_row(right, 2, "刺激提示（ms）", self.stimulus, width=12)
+        self.form_row(right, 3, "ターゲット率（%）", self.target_percent, width=12)
+        self.form_row(right, 4, "0-back指定位置", self.target_position, POSITIONS, width=12)
+        seed_row = ttk.Frame(right)
+        self.label(right, "乱数シード").grid(row=5, column=0, sticky="w", padx=(0, 12), pady=3)
+        seed_row.grid(row=5, column=1, sticky="w", pady=3)
+        ttk.Entry(seed_row, textvariable=self.seed, width=12).pack(side="left")
+        ttk.Button(seed_row, text="更新", style="Setup.TButton", command=lambda: self.seed.set(str(secrets.randbelow(2**32)))).pack(side="left", padx=(6, 0))
+        self.label(right, "1試行＝提示間隔。次の刺激直前まで応答可。", "Muted.TLabel").grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(5, 0))
         def arrange_columns(event):
-            wide = event.width >= left.winfo_reqwidth() + right.winfo_reqwidth() + 35
+            wide = event.width >= left.winfo_reqwidth() + right.winfo_reqwidth() + 28
             right.grid(row=0 if wide else 1, column=1 if wide else 0, sticky="nw",
-                       padx=(35 if wide else 0, 0), pady=(0 if wide else 20, 0))
+                       padx=(28 if wide else 0, 0), pady=(0 if wide else 12, 0))
         columns.bind("<Configure>", arrange_columns)
-        ttk.Separator(f).pack(fill="x", pady=18)
-        self.label(f, "刺激・記録の設定", "Heading.TLabel").pack(anchor="w", pady=(0, 8))
-        advanced = ttk.Frame(f)
-        advanced.pack(fill="x")
-        timing, recording = ttk.Frame(advanced), ttk.Frame(advanced)
-        timing.grid(row=0, column=0, sticky="nw")
-        recording.grid(row=0, column=1, sticky="nw")
-        self.form_row(timing, 0, "提示間隔（ms）", self.interval, tuple(map(str, INTERVALS)), width=10)
-        self.form_row(timing, 1, "刺激提示（ms）", self.stimulus, width=10)
-        self.form_row(timing, 2, "ターゲット率（%）", self.target_percent, width=10)
-        self.form_row(recording, 0, "0-back の指定位置", self.target_position, POSITIONS, width=12)
-        self.form_row(recording, 1, "乱数シード", self.seed, width=12)
-        ttk.Button(recording, text="新しいシード", command=lambda: self.seed.set(str(secrets.randbelow(2**32)))).grid(row=2, column=1, sticky="w", pady=3)
-        def arrange_advanced(event):
-            wide = event.width >= timing.winfo_reqwidth() + recording.winfo_reqwidth() + 40
-            recording.grid(row=0 if wide else 1, column=1 if wide else 0, sticky="nw",
-                           padx=(40 if wide else 0, 0), pady=(0 if wide else 12, 0))
-        advanced.bind("<Configure>", arrange_advanced)
-        self.label(f, "1試行 = 提示間隔。刺激が消えた後も、次の刺激が出る直前まで応答できます。", "Muted.TLabel").pack(anchor="w", pady=(7, 8))
-        ttk.Checkbutton(f, text="追加でLSLマーカーも送出する（任意：LabRecorder等で別途記録する場合）",
-                        variable=self.lsl_enabled, state="normal" if lsl_available else "disabled").pack(anchor="w")
-        self.label(f, "BITalino / OpenSignals 対応手順は README_ja.md を参照。" +
-                   ("" if lsl_available else " LSL利用時は pylsl の追加が必要です。"), "Muted.TLabel").pack(anchor="w", pady=(3, 8))
+
+        preview_row = ttk.Frame(f)
+        preview_row.pack(fill="x", pady=(8, 5))
+        preview = tk.Canvas(preview_row, width=100, height=84, bg=BACKGROUND, highlightthickness=0)
+        preview.pack(side="left", padx=(0, 14))
+        self.draw_grid(preview, 50, 42, 72, sample=1)
+        self.label(preview_row, "グレー背景・位置刺激。得点・残り時間・正誤・音なし。\n"
+                   "一致時のみ1回応答。タッチは横向き・1024×768以上・回転ロック。", "Muted.TLabel").pack(side="left", fill="x", expand=True)
+        ttk.Checkbutton(f, text="追加のLSLマーカー送出（任意・LabRecorder等で記録）", variable=self.lsl_enabled,
+                        state="normal" if lsl_available else "disabled").pack(anchor="w")
+        self.label(f, "生理信号は試行・課題終了ごとに保存。LabRecorder不要。接続手順は手順書へ。", "Muted.TLabel").pack(anchor="w", pady=(2, 5))
         output_row = ttk.Frame(f)
-        output_row.pack(fill="x", pady=(0, 12))
+        output_row.pack(fill="x")
         self.label(output_row, "保存先").pack(side="left", padx=(0, 12))
         ttk.Entry(output_row, textvariable=self.output).pack(side="left", fill="x", expand=True)
-        ttk.Button(output_row, text="変更", command=self.choose_output).pack(side="left", padx=(8, 0))
+        ttk.Button(output_row, text="変更", style="Setup.TButton", command=self.choose_output).pack(side="left", padx=(8, 0))
 
     def on_wheel(self, event):
         if self.phase in ("setup", "results"):
             self.operator_scroll.yview_scroll(-int(event.delta / 120), "units")
 
     def form_row(self, parent, row, title, variable, values=None, width=18, col=0):
-        self.label(parent, title).grid(row=row, column=col, sticky="w", padx=(0 if col == 0 else 40, 12), pady=5)
+        self.label(parent, title).grid(row=row, column=col, sticky="w", padx=(0 if col == 0 else 40, 12), pady=3)
         if values:
             widget = ttk.Combobox(parent, textvariable=variable, values=values, width=width, state="readonly")
         else:
             widget = ttk.Entry(parent, textvariable=variable, width=width)
-        widget.grid(row=row, column=col + 1, sticky="w", pady=5)
+        widget.grid(row=row, column=col + 1, sticky="w", pady=3)
 
     def choose_output(self):
         selected = filedialog.askdirectory(title="実験データの保存先", initialdir=APP_DIR)

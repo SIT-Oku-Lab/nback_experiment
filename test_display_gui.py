@@ -49,6 +49,25 @@ class SurfaceLayoutTests(unittest.TestCase):
                 self.root.update()
                 self.assertAlmostEqual(canvas.yview()[1], 1.0, places=2)
 
+    def test_maximized_surface_setup_shows_every_control_without_scrolling(self):
+        # Reserve space for the title bar and taskbar, including in effective coordinates.
+        for demo in (False, True):
+            self.app.demo = demo
+            self.app.show_setup()
+            for width, height in ((1464, 876), (2196, 1314)):
+                with self.subTest(demo=demo, viewport=(width, height)):
+                    self.root.geometry(f"{width}x{height}+0+0")
+                    self.root.update()
+                    self.assert_no_horizontal_clipping()
+                    canvas = self.app.setup_scroll
+                    self.assertEqual(canvas.yview(), (0.0, 1.0))
+                    for widget in self.descendants(self.app.frame):
+                        if not widget.winfo_manager() or widget.winfo_height() <= 1:
+                            continue
+                        self.assertGreaterEqual(widget.winfo_rooty(), self.root.winfo_rooty())
+                        self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(),
+                                             self.root.winfo_rooty() + self.root.winfo_height())
+
     def test_results_can_scroll_to_return_button_with_physiology_error(self):
         with tempfile.TemporaryDirectory() as folder:
             self.app.config = Config()
