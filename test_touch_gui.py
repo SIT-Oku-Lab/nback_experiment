@@ -107,6 +107,53 @@ class TkTouchTests(unittest.TestCase):
             self.root.tk.call("tk", "scaling", old)
             self.app.session_display = self.app.display_signature()
 
+    def test_start_countdown_includes_baseline_and_clears_before_first_stimulus(self):
+        app = self.app
+        for baseline, block, input_mode in ((30, 0, "touch"), (0, 0, "keyboard"), (30, 1, "touch")):
+            with self.subTest(baseline=baseline, block=block, input_mode=input_mode):
+                app.config = replace(app.config, mode="practice", baseline_s=baseline, input_mode=input_mode)
+                app.block_index = block
+                app.current = None
+                app.show_instruction()
+                start = app.rec.clock.perf_ns
+                with patch("app.time.perf_counter_ns", return_value=start):
+                    if input_mode == "touch":
+                        self.click("start")
+                    else:
+                        app.on_enter()
+                total = 5 + (baseline if block == 0 else 0)
+                self.assertEqual(app.phase, "prepare")
+                self.assertIn("準備中", app.canvas.itemcget("start-cue", "text"))
+                self.assertIn(f"開始まで {total} 秒", app.canvas.itemcget("start-cue", "text"))
+                # The cue fits between the abort control and the unchanged grid.
+                bbox = app.canvas.bbox("start-cue")
+                self.assertGreater(bbox[1], 112)
+                self.assertLess(bbox[3], 768 / 2 - 180)
+                self.assertGreaterEqual(bbox[0], 0)
+                self.assertLessEqual(bbox[2], 1024)
+                if baseline and block == 0:
+                    with patch("app.time.perf_counter_ns", return_value=app.phase_end):
+                        app.advance(app.phase_end)
+                    self.assertEqual(app.phase, "baseline")
+                    self.assertIn("安静中", app.canvas.itemcget("start-cue", "text"))
+                    self.assertIn("開始まで 30 秒", app.canvas.itemcget("start-cue", "text"))
+                deadline = app.phase_end
+                for before_ns, shown in ((3_000_000_000, 3), (2_000_000_000, 2), (1, 1)):
+                    at = deadline - before_ns
+                    with patch("app.time.perf_counter_ns", return_value=at):
+                        app.advance(at)
+                    text = app.canvas.itemcget("start-cue", "text")
+                    self.assertIn("まもなく開始します", text)
+                    self.assertIn(f"開始まで {shown} 秒", text)
+                    self.assertIsNone(app.current)
+                    self.assertEqual(app.phase_end, deadline)
+                with patch("app.time.perf_counter_ns", return_value=deadline):
+                    app.advance(deadline)
+                self.assertEqual(app.phase, "task")
+                self.assertEqual(app.block_start, start + total * 1_000_000_000)
+                self.assertEqual(app.current_index, 0)
+                self.assertFalse(app.canvas.find_withtag("start-cue"))
+
     def test_generated_events_complete_both_demo_blocks_and_save_touch_responses(self):
         app = self.app
         for block in range(2):

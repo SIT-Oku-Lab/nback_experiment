@@ -450,7 +450,7 @@ class App:
         c.create_text(x, y + 108, text=f"{duration_text}、位置を見て判断してください。", font=("Yu Gothic UI", font_size(14)), fill="#ededed")
         c.create_text(x, y + 168, text="準備ができたら下の開始に触れてください" if touch else "準備ができたら Enter", font=("Yu Gothic UI", font_size(18), "bold"), fill="#ededed")
         stop = "中止は右上を1.5秒長押し。" if touch else "中止は Esc。"
-        c.create_text(x, y + 212, text=f"{self.config.prepare_s}秒の準備後に開始します。{stop}", font=("Yu Gothic UI", font_size(11)), fill="#e0e0e0")
+        c.create_text(x, y + 212, text=f"開始前に残り秒数を表示します。{stop}", font=("Yu Gothic UI", font_size(11)), fill="#e0e0e0")
         if self.block_index == 0 and self.config.baseline_s:
             c.create_text(x, y + 245, text=f"最初に{self.config.baseline_s}秒間、中央を見て安静にしてください。", font=("Yu Gothic UI", font_size(11)), fill="#e0e0e0")
         self.render_touch_controls()
@@ -474,6 +474,7 @@ class App:
 
     def neutral_screen(self):
         self.canvas.delete("all")
+        self.start_cue_text = None
         self.cells = self.draw_grid(self.canvas, self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2, 360)
         self.render_touch_controls()
         self.root.update_idletasks()
@@ -497,8 +498,33 @@ class App:
         self.render_touch_controls()
         now = time.perf_counter_ns() if at is None else at
         self.phase_end = now + round(seconds * 1e9)
+        self.update_start_cue(now)
         self.rec.event(phase + "_start", now, block=self.block_index + 1, duration_s=seconds)
         self.rec.checkpoint()
+
+    def update_start_cue(self, now: int):
+        if self.phase not in ("prepare", "baseline"):
+            return
+        remaining_ns = max(0, self.phase_end - now)
+        if self.phase == "prepare" and self.block_index == 0:
+            remaining_ns += self.config.baseline_s * 1_000_000_000
+        # Round up so zero is never displayed while waiting for the first stimulus.
+        remaining = max(1, (remaining_ns + 999_999_999) // 1_000_000_000)
+        if remaining <= 3:
+            status = "まもなく開始します"
+        elif self.phase == "baseline":
+            status = "安静中：中央を見てお待ちください"
+        else:
+            status = "準備中：まだ回答しないでください"
+        n = self.config.conditions[self.block_index]
+        text = f"{status}\n{n}-back 開始まで {remaining} 秒"
+        if text == getattr(self, "start_cue_text", None):
+            return
+        self.canvas.delete("start-cue")
+        self.canvas.create_text(self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2 - 235,
+                                text=text, justify="center", width=self.canvas.winfo_width() - 80,
+                                font=("Yu Gothic UI", -22, "bold"), fill="#ededed", tags="start-cue")
+        self.start_cue_text = text
 
     def schedule_tick(self):
         if self.active:
@@ -536,9 +562,13 @@ class App:
                 self.show_instruction()
             else:
                 self.begin_block()
+        elif self.phase in ("prepare", "baseline"):
+            self.update_start_cue(now)
 
     def begin_block(self):
         self.phase = "task"
+        self.canvas.delete("start-cue")
+        self.start_cue_text = None
         self.render_touch_controls()
         self.root.update_idletasks()
         self.current_index = -1
