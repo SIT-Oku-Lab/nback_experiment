@@ -52,6 +52,9 @@ class App:
         style.configure("Muted.TLabel", foreground="#606763", font=("Yu Gothic UI", 10))
         style.configure("Title.TLabel", font=("Yu Gothic UI", 25, "bold"))
         style.configure("SetupTitle.TLabel", font=("Yu Gothic UI", 16, "bold"))
+        style.configure("Info.TFrame", background="#f8f9f6")
+        style.configure("Info.TLabel", background="#f8f9f6", font=("Yu Gothic UI", 11))
+        style.configure("InfoHeading.TLabel", background="#f8f9f6", font=("Yu Gothic UI", 13, "bold"))
         style.configure("Heading.TLabel", font=("Yu Gothic UI", 13, "bold"))
         style.configure("TButton", font=("Yu Gothic UI", 11), padding=(16, 10))
         style.configure("Primary.TButton", foreground="#ffffff", background="#424a45", padding=(20, 13))
@@ -266,20 +269,49 @@ class App:
                              "一致時のみ1回応答し指を離す。生理信号は試行・課題ごとに保存。", "Muted.TLabel")
         compact.pack(side="left", fill="x", expand=True)
         details = ttk.Frame(preview_row)
-        self.label(details, "現在の設定での実施予定", "Heading.TLabel").pack(anchor="w")
+        cards = [ttk.Frame(details, style="Info.TFrame", padding=16, borderwidth=1, relief="solid")
+                 for _ in range(3)]
+        self.setup_information_cards = cards
+        self.label(cards[0], "現在の設定での実施予定", "InfoHeading.TLabel").pack(anchor="w", pady=(0, 12))
         self.setup_summary = tk.StringVar()
-        summary_label = ttk.Label(details, textvariable=self.setup_summary)
-        summary_label.pack(fill="both", expand=True, anchor="w", pady=(4, 12))
-        details.bind("<Configure>", lambda e: summary_label.configure(wraplength=max(100, e.width - 16)))
-        self.label(details, "参加者への案内", "Heading.TLabel").pack(anchor="w")
-        self.label(details, "0-back：左の見本の指定位置に出たら応答。2-back：2つ前と同じ位置なら応答。\n"
-                   "最初の2試行は見るだけ（2-back）。一致時のみ1回触れ、指を離します。\n"
-                   "得点・正誤・音の表示はありません。", "Muted.TLabel").pack(fill="both", expand=True, anchor="w", pady=(4, 12))
-        self.label(details, "開始前の確認", "Heading.TLabel").pack(anchor="w")
-        self.label(details, "① 参加者ID・課題順序・入力方式・保存先を確認。初回は練習で操作を確認。\n"
-                   "② 生理信号を使う場合はOpenSignalsの計測とLSLを有効にし、デバイスを選択。\n"
-                   "③ 横向き・回転ロックで開始。実施中は他アプリへ切り替えない。\n"
-                   "終了後は保存先で記録を確認。生理信号は試行・課題終了ごとに自動保存。", "Muted.TLabel").pack(fill="both", expand=True, anchor="w", pady=(4, 0))
+        summary_label = ttk.Label(cards[0], textvariable=self.setup_summary, style="Info.TLabel", anchor="nw")
+        summary_label.pack(fill="both", expand=True)
+        self.label(cards[1], "参加者への案内", "InfoHeading.TLabel").pack(anchor="w", pady=(0, 12))
+        rule_label = self.label(cards[1], "0-back：左の見本の指定位置に出たら応答。\n\n"
+                   "2-back：2つ前と同じ位置なら応答。最初の2試行は見るだけ。\n\n"
+                   "一致時のみ1回触れ、指を離します。得点・正誤・音の表示はありません。",
+                   "Info.TLabel", wraplength=500, anchor="nw")
+        rule_label.pack(fill="both", expand=True)
+        self.label(cards[2], "開始前の確認", "InfoHeading.TLabel").pack(anchor="w", pady=(0, 12))
+        check_label = self.label(cards[2], "① ID・順序・入力方式・保存先を確認。初回は練習で操作を確認。\n\n"
+                   "② 生理信号を使う場合はOpenSignalsの計測とLSLを有効にし、デバイスを選択。\n\n"
+                   "③ 横向き・回転ロックで開始。実施中は他アプリへ切り替えない。\n\n"
+                   "終了後は保存先で記録を確認。生理信号は試行・課題ごとに自動保存。",
+                   "Info.TLabel", wraplength=500, anchor="nw")
+        check_label.pack(fill="both", expand=True)
+        details.rowconfigure(0, weight=1)
+        details_layout = None
+
+        def arrange_details():
+            nonlocal details_layout
+            width = max(100, f.winfo_width() - 48 - 240 - 14)
+            columns = 3 if width >= 1500 else 1
+            wrap = max(100, (width - 12 * (columns - 1)) // columns - 36)
+            if details_layout == (columns, wrap):
+                return
+            details_layout = (columns, wrap)
+            for index, card in enumerate(cards):
+                details.columnconfigure(index, weight=1 if index < columns else 0,
+                                        uniform="information" if index < columns else "")
+                details.rowconfigure(index, weight=1 if columns == 1 or index == 0 else 0)
+                card.grid(row=0 if columns == 3 else index, column=index if columns == 3 else 0,
+                          sticky="nsew", padx=6 if columns == 3 else 0,
+                          pady=(0, 8 if columns == 1 and index < 2 else 0))
+            for label in (summary_label, rule_label, check_label):
+                label.configure(wraplength=wrap)
+            f.after_idle(f.refresh_layout)
+            f.after_idle(fit_information)
+        details.bind("<Configure>", lambda e: f.refresh_layout())
         self.setup_information_expanded = False
 
         def redraw_preview(event=None):
@@ -295,6 +327,7 @@ class App:
             redraw_preview()
 
         def fit_information(event=None):
+            arrange_details()
             available = self.setup_scroll.winfo_height() - (f.winfo_reqheight() - preview_row.winfo_reqheight())
             expanded = available >= max(240, details.winfo_reqheight()) + 16 and f.winfo_width() >= 1200
             if expanded != self.setup_information_expanded:

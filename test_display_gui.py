@@ -130,6 +130,30 @@ class SurfaceLayoutTests(unittest.TestCase):
         self.app.clear()
         self.assertEqual(self.app.order.trace_info(), [])
 
+    def test_maximized_information_uses_horizontal_space_without_clipping(self):
+        self.root.geometry("2196x1314+0+0")
+        self.root.update()
+        self.assertTrue(self.app.setup_information_expanded)
+        cards = self.app.setup_information_cards
+        for left, right in zip(cards, cards[1:]):
+            self.assertEqual(left.winfo_rooty(), right.winfo_rooty())
+            self.assertLess(left.winfo_rootx() + left.winfo_width(), right.winfo_rootx())
+            self.assertLessEqual(abs(left.winfo_width() - right.winfo_width()), 2)
+        area = self.app.setup_information
+        self.assertLessEqual(abs(cards[-1].winfo_rootx() + cards[-1].winfo_width()
+                                 - area.winfo_rootx() - area.winfo_width()), 8)
+        self.assertLess(self.app.setup_preview.winfo_rootx() + self.app.setup_preview.winfo_width(),
+                        cards[0].winfo_rootx())
+        self.app.baseline.set("300")
+        self.app.rest.set("600")
+        self.root.update()
+        for card in cards:
+            for label in card.winfo_children():
+                if isinstance(label, ttk.Label):
+                    self.assertLessEqual(label.winfo_reqheight(), label.winfo_height())
+        self.assert_no_horizontal_clipping()
+        self.assertEqual(self.app.setup_scroll.yview(), (0.0, 1.0))
+
     def test_results_can_scroll_to_return_button_with_physiology_error(self):
         with tempfile.TemporaryDirectory() as folder:
             self.app.config = Config()
