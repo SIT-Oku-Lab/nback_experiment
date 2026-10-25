@@ -1,14 +1,14 @@
 # 空間 n-back 簡易実験
 
 Windows向けのオフラインGUIです。0-backと2-backをそれぞれ**600秒（10分）**実施します。
-v1.2.3では、Windowsの接触開始イベントを直接受信し、指を動かすまで待たずに長押しカウントを開始します。開始前にタッチ／キーボードを選択できます。
+v1.2.4では、「開始」を押した直後から「一致」ボタンを表示し、最初の刺激の前に応答位置を確認できます。Windowsの接触開始イベントを直接受信します。開始前にタッチ／キーボードを選択できます。
 BITalinoの計測をOpenSignalsで行い、本アプリがLSLで生理信号を直接受信します。
 **刺激1回ごとの試行終了後、および0-back・2-backそれぞれの課題終了後に、生理信号を自動保存します。LabRecorderは不要です。**
 
 ## 起動
 
 **`launch.cmd`をダブルクリック**してください。配布版があれば、Python不要の
-`dist/v1.2.3/NBackExperiment/NBackExperiment.exe`が起動します。
+`dist/v1.2.4/NBackExperiment/NBackExperiment.exe`が起動します。
 このフォルダを移動するときは、exeだけでなく`_internal`を含むフォルダ全体を移動してください。
 ZIP配布版では、展開した`NBackExperiment`フォルダ内の`NBackExperiment.exe`を直接起動してください。
 
@@ -25,7 +25,7 @@ python -m pip install -r requirements-optional.txt
 ```
 
 配布版にはpylslとliblslが含まれます。OpenSignalsは別途用意してください。
-旧版の実行ファイルと記録はそのまま残しています。`launch.cmd`はv1.2.3がなければPythonのソース版を起動します。
+旧版の実行ファイルと記録はそのまま残しています。`launch.cmd`はv1.2.4がなければPythonのソース版を起動します。
 旧版exeへの自動フォールバックは行いません。GitHubのソースには配布exe・ZIPを含めないため、ソースから起動するか再ビルドしてください。
 
 ## 実施手順
@@ -60,7 +60,7 @@ python -m pip install -r requirements-optional.txt
 ## タッチ操作（Windowsタブレット）
 
 - 横向き・有効表示領域1024×768以上で使用し、Windowsの回転ロックを有効にしてください。開始前に条件を検査します。実施中の表示領域・向き・Tk表示倍率の変更は `display_changed` として中止・保存します。
-- 「一致」は幅320×高さ100のTk座標単位、下端余白24で固定表示します。グリッドは従来どおり中央の360×360です。準備・安静・休憩中には応答ボタンを表示しません。
+- 「一致」は「開始」を押した直後から準備・安静・課題中を通じて、幅320×高さ100のTk座標単位、下端余白24の同じ位置に表示します。準備・安静中のタッチは採点対象外です。休憩中には応答ボタンを表示しません。グリッドは従来どおり中央の360×360です。
 - Windowsの接触開始イベント（`WM_POINTERDOWN`、または接触中フラグ付きの`WM_POINTERENTER`）で応答します。マウス変換後の通知、指の移動、指離しを待ちません。領域外から滑らせて入れる操作は応答になりません。
 - 指を置いたまま次の試行になっても再応答しません。開始に使った指も一度離してください。同じ試行での2回目以降の応答は採点に反映しません。
 - 「一致」に触れるとボタンが明るくなり、文字が暗くなります。押下中は強調を保ち、短いタップでも押下から最低150 ms表示します。正誤・採点対象外・同じ試行への再タップにかかわらず同じ表示となり、操作への反応を示します。音や正誤表示はありません。
@@ -85,7 +85,7 @@ Windowsが左ボタン押下を遅らせると、従来の1.5秒タイマーが�
 
 v1.2.2では、ボタン外へ1px動くだけで即時取消となる実装と、タイマー通知前に指を離すと1.5秒経過済みでも取消となる実装を修正しました。また、成立前に「0.0秒」と表示しないよう、残り時間を切り上げます。指を離した時点でも実際の経過時間を判定します。
 v1.2.3では、Canvas・Tk親・外側ウィンドウで直接の接触開始を受け、互換マウス通知が出るまで待たない経路に変更しました。タッチ用の接触捕捉をTkのマウスgrabで置き換えず、マウス互換のリリースで長押しを取り消さないようにしています。適用結果は `input.native_touch` に記録します。
-更新後は旧アプリを閉じ、v1.2.3を起動してください。まず「動作確認」で、指を置いたまま動かさず「中止まで○秒」が進み、中止・保存されることを確認してください。
+更新後は旧アプリを閉じ、v1.2.4を起動してください。まず「動作確認」で、開始直後に「一致」が表示されることと、指を置いたまま動かさず「中止まで○秒」が進み、中止・保存されることを確認してください。
 報告端末のSurface Pro 12in 1st Ed with Snapdragonでの物理タッチ検証は未実施です。Windows APIのハンドルはポインタ幅で扱い、64bitプロセスでの切り詰めを防いでいます。
 実装根拠: [Microsoftのシステムジェスチャー仕様](https://learn.microsoft.com/en-us/windows/win32/tablet/wm-tablet-querysystemgesturestatus-message)。
 
@@ -255,7 +255,7 @@ python build_windows.py
 python package_windows.py
 ```
 
-ビルド・梱包先は `engine.VERSION` に合わせます。生成先は `dist/v1.2.3/NBackExperiment/`、ZIPは `NBackExperiment_Windows.zip`、照合値は `NBackExperiment_Windows.sha256` です。
+ビルド・梱包先は `engine.VERSION` に合わせます。生成先は `dist/v1.2.4/NBackExperiment/`、ZIPは `NBackExperiment_Windows.zip`、照合値は `NBackExperiment_Windows.sha256` です。
 
 `verify_native_touch.py`はWindows専用です。自分自身の課題画面が前面にあることを確認してから、OSのタッチ注入APIで同一座標の接触を維持し、空間的な移動なしにカウント開始・中止されることを検証します。物理Surfaceセンサーの検証ではありません。結果は `verification_results/stationary_native_touch.json` に保存します。
 

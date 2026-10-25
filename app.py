@@ -706,7 +706,9 @@ class App:
     @staticmethod
     def touch_layout(width, height, phase):
         regions = {"abort": (width - 284, 24, width - 24, 112)}
-        if phase in ("ready", "task"):
+        # Keep the response target visible from Start through the first stimulus.
+        # respond() still accepts/scores responses only during the task phase.
+        if phase in ("ready", "prepare", "baseline", "task"):
             regions["start" if phase == "ready" else "response"] = (width / 2 - 160, height - 124, width / 2 + 160, height - 24)
         return regions
 

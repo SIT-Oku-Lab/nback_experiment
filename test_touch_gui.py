@@ -65,7 +65,28 @@ class TkTouchTests(unittest.TestCase):
                 self.assertLess(c.bbox(item)[3], start_top)
         self.click("start")
         self.assertEqual(self.app.phase, "prepare")
-        self.assertEqual(set(self.app.touch_regions), {"abort"})
+        self.assertEqual(set(self.app.touch_regions), {"abort", "response"})
+
+    def test_response_visible_from_start_through_baseline_and_first_stimulus(self):
+        app = self.app
+        app.config = replace(app.config, baseline_s=30)
+        start_region = app.touch_regions["start"]
+        self.click("start")
+        self.assertEqual(app.phase, "prepare")
+        for phase in ("prepare", "baseline", "task"):
+            self.assertEqual(app.phase, phase)
+            self.assertNotIn("start", app.touch_regions)
+            self.assertEqual(app.touch_regions["response"], start_region)
+            self.assertEqual(app.canvas.itemcget("response-label", "text"), "一致")
+            if phase != "task":
+                self.click("response")
+                self.assertIsNone(app.current)
+                with patch("app.time.perf_counter_ns", return_value=app.phase_end):
+                    app.advance(app.phase_end)
+        self.assertEqual(app.current_index, 0)
+        with patch("app.time.perf_counter_ns", return_value=app.block_start + 100_000_000):
+            self.click("response")
+        self.assertEqual(app.current["response"], app.block_start + 100_000_000)
 
     def test_instruction_text_fits_at_multiple_tk_scalings(self):
         old = self.root.tk.call("tk", "scaling")

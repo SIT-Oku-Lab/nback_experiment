@@ -194,7 +194,7 @@ class InputTests(unittest.TestCase):
             self.assertEqual(app.phase, "ready")
             self.press(app, 100)
             self.assertEqual(app.phase, "prepare")
-            self.assertNotIn("response", app.touch_regions)
+            self.assertIn("response", app.touch_regions)
             # Keep the contact through preparation and the first task stimulus.
             with patch("app.time.perf_counter_ns", return_value=app.block_start + 6_000_000_000):
                 app.begin_block()
@@ -213,9 +213,9 @@ class InputTests(unittest.TestCase):
             for phase in ("ready", "prepare", "baseline", "task", "rest"):
                 regions = App.touch_layout(width, height, phase)
                 self.assertIn("abort", regions)
-                self.assertEqual("response" in regions, phase == "task")
+                self.assertEqual("response" in regions, phase in ("prepare", "baseline", "task"))
                 self.assertEqual("start" in regions, phase == "ready")
-                if phase == "task":
+                if phase in ("prepare", "baseline", "task"):
                     l, t, r, b = regions["response"]
                     self.assertEqual((r - l, b - t, height - b), (320, 100, 24))
                     self.assertGreater(t, height / 2 + 180)
@@ -416,15 +416,19 @@ class InputTests(unittest.TestCase):
             self.assertIsNone(app.current["response"])
             app.rec.finish("aborted")
 
-    def test_non_task_phases_have_no_response_and_ignore_contacts(self):
+    def test_non_task_phases_ignore_response_contacts(self):
         for phase in ("prepare", "baseline", "rest"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as folder:
                 app = self.make_app(folder)
                 app.phase = phase
                 app.phase_end = app.block_start + 10_000_000_000
                 app.render_touch_controls()
+                self.assertEqual("response" in app.touch_regions, phase != "rest")
                 self.press(app, 100)
                 self.assertIsNone(app.current["response"])
+                if phase != "rest":
+                    detail = json.loads(self.events(app)[-1]["detail_json"])
+                    self.assertEqual(detail["reason"], "outside_task")
                 app.on_pointer_release()
                 app.rec.finish("aborted")
 
