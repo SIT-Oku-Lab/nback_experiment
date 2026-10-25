@@ -38,7 +38,7 @@ class SurfaceLayoutTests(unittest.TestCase):
 
     def assert_no_horizontal_clipping(self):
         for widget in self.descendants(self.app.frame):
-            if not widget.winfo_manager() or widget.winfo_width() <= 1:
+            if not widget.winfo_ismapped() or widget.winfo_width() <= 1:
                 continue
             with self.subTest(widget=str(widget)):
                 self.assertGreaterEqual(widget.winfo_x(), 0)
@@ -75,7 +75,7 @@ class SurfaceLayoutTests(unittest.TestCase):
                     canvas = self.app.setup_scroll
                     self.assertEqual(canvas.yview(), (0.0, 1.0))
                     for widget in self.descendants(self.app.frame):
-                        if not widget.winfo_manager() or widget.winfo_height() <= 1:
+                        if not widget.winfo_ismapped() or widget.winfo_height() <= 1:
                             continue
                         self.assertGreaterEqual(widget.winfo_rooty(), self.root.winfo_rooty())
                         self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(),
@@ -151,8 +151,42 @@ class SurfaceLayoutTests(unittest.TestCase):
             for label in card.winfo_children():
                 if isinstance(label, ttk.Label):
                     self.assertLessEqual(label.winfo_reqheight(), label.winfo_height())
+        for label in self.app.setup_information_lower_labels:
+            self.assertTrue(label.winfo_ismapped())
+            self.assertLessEqual(label.winfo_reqheight(), label.winfo_height())
+            card = label.master.master
+            self.assertLessEqual(card.winfo_rooty() + card.winfo_height()
+                                 - label.winfo_rooty() - label.winfo_height(), 18)
         self.assert_no_horizontal_clipping()
         self.assertEqual(self.app.setup_scroll.yview(), (0.0, 1.0))
+
+    def test_trial_counts_input_guide_and_recording_guide_follow_settings(self):
+        self.assertIn("各200試行", self.app.setup_trial_summary.get())
+        self.assertIn("2-back 198", self.app.setup_trial_summary.get())
+        self.assertIn("2-back 59", self.app.setup_trial_summary.get())
+        self.app.interval.set("1500")
+        self.assertIn("各400試行", self.app.setup_trial_summary.get())
+        self.assertIn("2-back 398", self.app.setup_trial_summary.get())
+        self.assertIn("2-back 119", self.app.setup_trial_summary.get())
+        self.app.target_percent.set("50")
+        self.assertIn("2-back 199", self.app.setup_trial_summary.get())
+        self.app.stimulus.set("1500")
+        self.assertIn("数値を確認", self.app.setup_trial_summary.get())
+        self.app.stimulus.set("500")
+        self.app.input_selection.set("キーボード")
+        self.assertIn("Space", self.app.setup_input_guide.get())
+        self.app.input_selection.set("タッチ")
+        self.assertIn("1.5秒", self.app.setup_input_guide.get())
+        self.app.physiology_enabled.set(True)
+        self.assertIn("physiology/", self.app.setup_saved_guide.get())
+        self.app.physiology_enabled.set(False)
+        self.assertIn("保存はOFF", self.app.setup_saved_guide.get())
+        self.app.demo = True
+        self.app.interval.set("3000")
+        self.assertIn("動作確認：各20試行", self.app.setup_trial_summary.get())
+        self.app.clear()
+        self.assertIsNone(self.app.setup_layout_timer)
+        self.assertEqual(self.app.interval.trace_info(), [])
 
     def test_results_can_scroll_to_return_button_with_physiology_error(self):
         with tempfile.TemporaryDirectory() as folder:

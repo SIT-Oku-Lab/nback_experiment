@@ -55,6 +55,7 @@ class App:
         style.configure("Info.TFrame", background="#f8f9f6")
         style.configure("Info.TLabel", background="#f8f9f6", font=("Yu Gothic UI", 11))
         style.configure("InfoHeading.TLabel", background="#f8f9f6", font=("Yu Gothic UI", 13, "bold"))
+        style.configure("InfoSubheading.TLabel", background="#f8f9f6", font=("Yu Gothic UI", 11, "bold"))
         style.configure("Heading.TLabel", font=("Yu Gothic UI", 13, "bold"))
         style.configure("TButton", font=("Yu Gothic UI", 11), padding=(16, 10))
         style.configure("Primary.TButton", foreground="#ffffff", background="#424a45", padding=(20, 13))
@@ -75,6 +76,7 @@ class App:
         self.canvas: tk.Canvas | None = None
         self.frame: ttk.Frame | None = None
         self.setup_traces = []
+        self.setup_layout_timer = None
         self.timer = None
         self.key_down = False
         self.pointer_down = False
@@ -126,6 +128,9 @@ class App:
         self.show_setup()
 
     def clear(self):
+        if self.setup_layout_timer is not None:
+            self.root.after_cancel(self.setup_layout_timer)
+            self.setup_layout_timer = None
         for variable, trace in self.setup_traces:
             variable.trace_remove("write", trace)
         self.setup_traces.clear()
@@ -274,21 +279,37 @@ class App:
         self.setup_information_cards = cards
         self.label(cards[0], "現在の設定での実施予定", "InfoHeading.TLabel").pack(anchor="w", pady=(0, 12))
         self.setup_summary = tk.StringVar()
+        self.setup_trial_summary = tk.StringVar()
+        self.setup_input_guide = tk.StringVar()
+        self.setup_saved_guide = tk.StringVar()
         summary_label = ttk.Label(cards[0], textvariable=self.setup_summary, style="Info.TLabel", anchor="nw")
         summary_label.pack(fill="both", expand=True)
         self.label(cards[1], "参加者への案内", "InfoHeading.TLabel").pack(anchor="w", pady=(0, 12))
         rule_label = self.label(cards[1], "0-back：左の見本の指定位置に出たら応答。\n\n"
                    "2-back：2つ前と同じ位置なら応答。最初の2試行は見るだけ。\n\n"
-                   "一致時のみ1回触れ、指を離します。得点・正誤・音の表示はありません。",
+                   "不一致なら応答しません。得点・正誤・音の表示はありません。",
                    "Info.TLabel", wraplength=500, anchor="nw")
         rule_label.pack(fill="both", expand=True)
         self.label(cards[2], "開始前の確認", "InfoHeading.TLabel").pack(anchor="w", pady=(0, 12))
-        check_label = self.label(cards[2], "① ID・順序・入力方式・保存先を確認。初回は練習で操作を確認。\n\n"
-                   "② 生理信号を使う場合はOpenSignalsの計測とLSLを有効にし、デバイスを選択。\n\n"
-                   "③ 横向き・回転ロックで開始。実施中は他アプリへ切り替えない。\n\n"
-                   "終了後は保存先で記録を確認。生理信号は試行・課題ごとに自動保存。",
+        check_label = self.label(cards[2], "① ID・順序・入力方式・保存先を確認。\n"
+                   "② 初回は練習でルールと操作を確認。\n"
+                   "③ 生理信号はOpenSignalsの計測・LSLを有効にし、デバイスを選択。\n"
+                   "④ 横向き・回転ロック。実施中は他アプリへ切り替えない。",
                    "Info.TLabel", wraplength=500, anchor="nw")
         check_label.pack(fill="both", expand=True)
+
+        def add_lower_section(card, title, variable):
+            section = ttk.Frame(card, style="Info.TFrame")
+            section.pack(side="bottom", fill="x", pady=(12, 0))
+            ttk.Separator(section).pack(fill="x", pady=(0, 8))
+            self.label(section, title, "InfoSubheading.TLabel").pack(anchor="w", pady=(0, 6))
+            label = ttk.Label(section, textvariable=variable, style="Info.TLabel", anchor="nw", wraplength=500)
+            label.pack(fill="x")
+            return label
+        trial_label = add_lower_section(cards[0], "試行数と応答受付", self.setup_trial_summary)
+        input_label = add_lower_section(cards[1], "選択中の操作方法", self.setup_input_guide)
+        saved_label = add_lower_section(cards[2], "終了後に確認する記録", self.setup_saved_guide)
+        self.setup_information_lower_labels = (trial_label, input_label, saved_label)
         details.rowconfigure(0, weight=1)
         details_layout = None
 
@@ -307,10 +328,9 @@ class App:
                 card.grid(row=0 if columns == 3 else index, column=index if columns == 3 else 0,
                           sticky="nsew", padx=6 if columns == 3 else 0,
                           pady=(0, 8 if columns == 1 and index < 2 else 0))
-            for label in (summary_label, rule_label, check_label):
+            for label in (summary_label, rule_label, check_label, trial_label, input_label, saved_label):
                 label.configure(wraplength=wrap)
-            f.after_idle(f.refresh_layout)
-            f.after_idle(fit_information)
+            queue_layout()
         details.bind("<Configure>", lambda e: f.refresh_layout())
         self.setup_information_expanded = False
 
@@ -324,7 +344,19 @@ class App:
 
         def update_information(*args):
             self.setup_summary.set(self.setup_overview())
+            self.setup_trial_summary.set(self.setup_trial_overview())
+            self.setup_input_guide.set(
+                "開始・一致：画面のボタンに1回触れ、都度指を離す。\n"
+                "中止：右上を1.5秒長押し（Escも可）。"
+                if self.input_selection.get() == "タッチ" else
+                "開始：Enter／一致：Space\n中止：Esc／時刻マーカー：M\n画面タップは課題への応答になりません。")
+            self.setup_saved_guide.set(
+                "trials.csv：各試行と反応時間\nsummary.json：集計／session.json：条件\n"
+                "events.csv：時刻／planned_trials.csv：系列\n"
+                + ("physiology/：生理信号も自動保存\n" if self.physiology_enabled.get() else "生理信号の受信・保存はOFF\n")
+                + "中止時も記録済みデータを保存します。")
             redraw_preview()
+            queue_layout()
 
         def fit_information(event=None):
             arrange_details()
@@ -340,12 +372,21 @@ class App:
                     details.pack_forget()
                     preview.configure(width=100, height=84)
                     compact.pack(side="left", fill="x", expand=True)
-                f.after_idle(f.refresh_layout)
+                queue_layout()
+        def queue_layout():
+            if self.setup_layout_timer is None:
+                self.setup_layout_timer = self.root.after_idle(refresh_information)
+
+        def refresh_information():
+            self.setup_layout_timer = None
+            f.refresh_layout()
+            fit_information()
         preview.bind("<Configure>", redraw_preview)
         preview.bind("<Configure>", lambda e: f.refresh_layout(), add="+")
         f.bind("<Configure>", fit_information, add="+")
         self.setup_scroll.bind("<Configure>", fit_information, add="+")
-        for variable in (self.order, self.baseline, self.rest, self.input_selection, self.target_position):
+        for variable in (self.order, self.baseline, self.rest, self.input_selection, self.target_position,
+                         self.interval, self.stimulus, self.target_percent, self.physiology_enabled):
             trace = variable.trace_add("write", update_information)
             self.setup_traces.append((variable, trace))
         update_information()
@@ -378,6 +419,25 @@ class App:
                     "説明画面で待つ時間は含みません。安静は最初の課題前のみです。")
         except (ValueError, KeyError):
             return "安静・休憩の数値と課題順序を確認してください。"
+
+    def setup_trial_overview(self):
+        """Use the experiment's counts/rounding and preview the chosen stimulus timing."""
+        try:
+            config = Config(conditions=ORDERS[self.order.get()], mode="demo" if self.demo else "experiment",
+                            interval_ms=600 if self.demo else int(self.interval.get()),
+                            stimulus_ms=200 if self.demo else int(self.stimulus.get()),
+                            target_percent=int(self.target_percent.get()))
+            config.validate()
+            count = config.duration_ms // config.interval_ms
+            scored = "／".join(f"{n}-back {count - n}" for n in config.conditions)
+            targets = "／".join(f"{n}-back {math.floor((count - n) * config.target_percent / 100 + .5)}"
+                               for n in config.conditions)
+            mode = "動作確認" if self.demo else "本実験"
+            return (f"{mode}：各{count}試行／間隔{config.interval_ms} ms・提示{config.stimulus_ms} ms\n"
+                    f"採点試行：{scored}\n一致予定：{targets}\n"
+                    "応答は刺激の表示完了から次試行直前まで（刺激が消えた後も可）。")
+        except (ValueError, KeyError):
+            return "提示間隔・刺激提示・ターゲット率の数値を確認してください。"
 
     def maximize_window(self):
         try:
