@@ -15,6 +15,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 import traceback
 
 from engine import (BACKGROUND, FIXATION, GRID, STIMULUS, INTERVALS, VERSION,
@@ -56,6 +57,7 @@ class App:
         style.map("Primary.TButton", background=[("active", "#303a33")])
         style.configure("TCombobox", padding=5)
         style.configure("TEntry", padding=5)
+        style.configure("Treeview", rowheight=tkfont.Font(family="Yu Gothic UI", size=10).metrics("linespace") + 12)
         self.active = False
         self.starting = False
         self.closing = False
@@ -131,7 +133,25 @@ class App:
 
     def label(self, parent, text, style="TLabel", **kwargs):
         widget = ttk.Label(parent, text=text, style=style, **kwargs)
+        if "wraplength" not in kwargs:
+            parent.bind("<Configure>", lambda e: widget.configure(wraplength=max(100, e.width - 16)), add="+")
         return widget
+
+    def scroll_content(self, parent):
+        """Keep long operator screens accessible at any DPI/window height."""
+        area = ttk.Frame(parent)
+        area.pack(fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(area, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+        canvas = tk.Canvas(area, bg="#eeefed", highlightthickness=0, yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.configure(command=canvas.yview)
+        content = ttk.Frame(canvas, padding=(24, 20, 24, 16))
+        window = canvas.create_window(0, 0, window=content, anchor="nw")
+        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        self.operator_scroll = canvas
+        return content
 
     def show_setup(self):
         self.clear()
@@ -140,28 +160,25 @@ class App:
         self.root.configure(cursor="", bg="#eeefed")
         self.frame = ttk.Frame(self.root)
         self.frame.pack(fill="both", expand=True)
-        footer = ttk.Frame(self.frame, padding=(36, 12, 36, 18))
+        footer = ttk.Frame(self.frame, padding=(24, 12, 24, 18))
         footer.pack(side="bottom", fill="x")
         buttons = ttk.Frame(footer)
         buttons.pack(fill="x")
         self.start_buttons = []
         for text, practice in (("本実験を開始" if not self.demo else "動作確認を開始", False), ("練習する（各60秒）", True)):
             button = ttk.Button(buttons, text=text, style="TButton" if practice else "Primary.TButton", command=lambda p=practice: self.start(p))
-            button.pack(side="left", padx=(0, 10))
             self.start_buttons.append(button)
-        ttk.Button(buttons, text="手順書を開く", command=self.open_manual).pack(side="right")
+        manual_button = ttk.Button(buttons, text="手順書を開く", command=self.open_manual)
+        def arrange_buttons(event):
+            controls = self.start_buttons + [manual_button]
+            wide = event.width >= sum(button.winfo_reqwidth() + 10 for button in controls)
+            for index, button in enumerate(controls):
+                button.grid(row=0 if wide else index, column=index if wide else 0,
+                            sticky="ew", padx=(0, 10), pady=3)
+        buttons.bind("<Configure>", arrange_buttons)
         self.label(footer, "タッチ：開始・一致ボタン／長押しで中止　　キーボード：Enter・Space・Esc\n入力方式は開始前に選択します。M：実験者の手動時刻マーカー", "Muted.TLabel").pack(anchor="w", pady=(10, 0))
-        scroll_area = ttk.Frame(self.frame)
-        scroll_area.pack(fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(scroll_area, orient="vertical")
-        scrollbar.pack(side="right", fill="y")
-        self.setup_scroll = tk.Canvas(scroll_area, bg="#eeefed", highlightthickness=0, yscrollcommand=scrollbar.set)
-        self.setup_scroll.pack(side="left", fill="both", expand=True)
-        scrollbar.configure(command=self.setup_scroll.yview)
-        f = ttk.Frame(self.setup_scroll, padding=(36, 25, 25, 8))
-        content = self.setup_scroll.create_window(0, 0, window=f, anchor="nw")
-        f.bind("<Configure>", lambda e: self.setup_scroll.configure(scrollregion=self.setup_scroll.bbox("all")))
-        self.setup_scroll.bind("<Configure>", lambda e: self.setup_scroll.itemconfigure(content, width=e.width))
+        f = self.scroll_content(self.frame)
+        self.setup_scroll = self.operator_scroll
         self.label(f, "N-BACK  /  EXPERIMENT", "Muted.TLabel").pack(anchor="w")
         self.label(f, "空間 n-back 課題", "Title.TLabel").pack(anchor="w", pady=(3, 6))
         self.label(f, "0-back と 2-back を、同じ刺激画面・同じ応答方法で実施します。", "Muted.TLabel").pack(anchor="w")
@@ -181,14 +198,16 @@ class App:
         if not lsl_available:
             self.discover_button.configure(state="disabled")
             self.sensor_status.set("ソース版で生理信号を受信するにはpylslが必要です。配布exeには同梱されています。")
-        ttk.Label(sensor_frame, textvariable=self.sensor_status, style="Muted.TLabel", wraplength=880).pack(anchor="w")
+        sensor_label = ttk.Label(sensor_frame, textvariable=self.sensor_status, style="Muted.TLabel")
+        sensor_label.pack(anchor="w")
+        sensor_frame.bind("<Configure>", lambda e: sensor_label.configure(wraplength=max(100, e.width - 16)))
         self.label(sensor_frame, "各刺激試行の終了後と各10分課題の終了後に自動保存します。LabRecorderは不要です。", "Muted.TLabel").pack(anchor="w", pady=(3, 0))
         if self.demo:
             self.label(f, "動作確認モード：各12秒。本実験データとは別に保存されます。", "Heading.TLabel").pack(anchor="w", pady=(12, 0))
         ttk.Separator(f).pack(fill="x", pady=18)
         columns = ttk.Frame(f)
         columns.pack(fill="x")
-        left, right = ttk.Frame(columns), ttk.Frame(columns, padding=(35, 0, 0, 0))
+        left, right = ttk.Frame(columns), ttk.Frame(columns)
         left.grid(row=0, column=0, sticky="nw")
         right.grid(row=0, column=1, sticky="nw")
         columns.columnconfigure(0, weight=1)
@@ -207,16 +226,29 @@ class App:
         preview.pack(anchor="w", pady=(12, 10))
         self.draw_grid(preview, 105, 80, 126, sample=1)
         self.label(right, "グレー背景・固定グリッド・位置刺激のみ。\n得点、残り時間、正誤表示、効果音はありません。\nタッチ：一致ボタンに触れます。\nキーボード：Spaceキーを押します。\nタッチは横向き・表示領域1024×768以上。", "Muted.TLabel", wraplength=350).pack(anchor="w")
+        def arrange_columns(event):
+            wide = event.width >= left.winfo_reqwidth() + right.winfo_reqwidth() + 35
+            right.grid(row=0 if wide else 1, column=1 if wide else 0, sticky="nw",
+                       padx=(35 if wide else 0, 0), pady=(0 if wide else 20, 0))
+        columns.bind("<Configure>", arrange_columns)
         ttk.Separator(f).pack(fill="x", pady=18)
         self.label(f, "刺激・記録の設定", "Heading.TLabel").pack(anchor="w", pady=(0, 8))
         advanced = ttk.Frame(f)
         advanced.pack(fill="x")
-        self.form_row(advanced, 0, "提示間隔（ms）", self.interval, tuple(map(str, INTERVALS)), width=10)
-        self.form_row(advanced, 1, "刺激提示（ms）", self.stimulus, width=10)
-        self.form_row(advanced, 2, "ターゲット率（%）", self.target_percent, width=10)
-        self.form_row(advanced, 0, "0-back の指定位置", self.target_position, POSITIONS, width=12, col=2)
-        self.form_row(advanced, 1, "乱数シード", self.seed, width=12, col=2)
-        ttk.Button(advanced, text="新しいシード", command=lambda: self.seed.set(str(secrets.randbelow(2**32)))).grid(row=2, column=3, sticky="w", pady=3)
+        timing, recording = ttk.Frame(advanced), ttk.Frame(advanced)
+        timing.grid(row=0, column=0, sticky="nw")
+        recording.grid(row=0, column=1, sticky="nw")
+        self.form_row(timing, 0, "提示間隔（ms）", self.interval, tuple(map(str, INTERVALS)), width=10)
+        self.form_row(timing, 1, "刺激提示（ms）", self.stimulus, width=10)
+        self.form_row(timing, 2, "ターゲット率（%）", self.target_percent, width=10)
+        self.form_row(recording, 0, "0-back の指定位置", self.target_position, POSITIONS, width=12)
+        self.form_row(recording, 1, "乱数シード", self.seed, width=12)
+        ttk.Button(recording, text="新しいシード", command=lambda: self.seed.set(str(secrets.randbelow(2**32)))).grid(row=2, column=1, sticky="w", pady=3)
+        def arrange_advanced(event):
+            wide = event.width >= timing.winfo_reqwidth() + recording.winfo_reqwidth() + 40
+            recording.grid(row=0 if wide else 1, column=1 if wide else 0, sticky="nw",
+                           padx=(40 if wide else 0, 0), pady=(0 if wide else 12, 0))
+        advanced.bind("<Configure>", arrange_advanced)
         self.label(f, "1試行 = 提示間隔。刺激が消えた後も、次の刺激が出る直前まで応答できます。", "Muted.TLabel").pack(anchor="w", pady=(7, 8))
         ttk.Checkbutton(f, text="追加でLSLマーカーも送出する（任意：LabRecorder等で別途記録する場合）",
                         variable=self.lsl_enabled, state="normal" if lsl_available else "disabled").pack(anchor="w")
@@ -229,8 +261,8 @@ class App:
         ttk.Button(output_row, text="変更", command=self.choose_output).pack(side="left", padx=(8, 0))
 
     def on_wheel(self, event):
-        if self.phase == "setup":
-            self.setup_scroll.yview_scroll(-int(event.delta / 120), "units")
+        if self.phase in ("setup", "results"):
+            self.operator_scroll.yview_scroll(-int(event.delta / 120), "units")
 
     def form_row(self, parent, row, title, variable, values=None, width=18, col=0):
         self.label(parent, title).grid(row=row, column=col, sticky="w", padx=(0 if col == 0 else 40, 12), pady=5)
@@ -434,7 +466,7 @@ class App:
         x, y = c.winfo_width() / 2, c.winfo_height() / 2
         n = self.config.conditions[self.block_index]
         touch = self.config.input_mode == "touch"
-        font_size = lambda points: -round(points * 4 / 3) if touch else points
+        font_size = lambda points: -round(points * 4 / 3)
         c.create_text(x, y - 230, text=f"{n}-back", font=("Yu Gothic UI", font_size(32), "bold"), fill="#ededed")
         action = "一致ボタンに1回触れてください。" if touch else "Space キーを1回押してください。"
         if n == 0:
@@ -1010,9 +1042,9 @@ class App:
     def show_results(self, status, reason):
         self.clear()
         self.phase = "results"
-        self.frame = ttk.Frame(self.root, padding=(45, 40))
+        self.frame = ttk.Frame(self.root)
         self.frame.pack(fill="both", expand=True)
-        f = self.frame
+        f = self.scroll_content(self.frame)
         self.label(f, "SESSION / SAVED", "Muted.TLabel").pack(anchor="w")
         self.label(f, "実施を終了しました" if status == "completed" else "中止して保存しました", "Title.TLabel").pack(anchor="w", pady=(8, 18))
         mode = {"experiment": "本実験", "practice": "練習", "demo": "動作確認"}[self.config.mode]
@@ -1026,10 +1058,13 @@ class App:
                        "physiology_stream_error": "OpenSignalsの生理信号の切断・時計同期・保存エラー"}
             self.label(f, "中止理由：" + reasons.get(reason, reason)).pack(anchor="w", pady=(8, 0))
         self.label(f, "成績は実験者向けです。次の課題まで参加者に見せない運用もできます。", "Muted.TLabel").pack(anchor="w", pady=(10, 15))
-        tree = ttk.Treeview(f, columns=("n", "count", "hit", "miss", "fa", "cr", "accuracy", "rt"), show="headings", height=4)
+        table = ttk.Frame(f)
+        table.pack(fill="x", pady=(0, 16))
+        tree = ttk.Treeview(table, columns=("n", "count", "hit", "miss", "fa", "cr", "accuracy", "rt"), show="headings", height=4)
         for name, text, width in zip(tree["columns"], ("課題", "採点試行", "Hit", "Miss", "誤反応", "正しい棄却", "正答率", "平均RT (ms)"), (85, 95, 65, 65, 75, 100, 90, 125)):
             tree.heading(name, text=text)
-            tree.column(name, width=width, anchor="center", stretch=True)
+            heading_width = tkfont.nametofont("TkHeadingFont").measure(text) + 24
+            tree.column(name, width=max(width, heading_width), minwidth=max(width, heading_width), anchor="center", stretch=True)
         for block in range(1, len(self.config.conditions) + 1):
             rows = [r for r in self.rec.rows if r["block"] == block]
             summary = summarize(rows)
@@ -1037,7 +1072,10 @@ class App:
                                             summary["hit"], summary["miss"], summary["false_alarm"], summary["correct_rejection"],
                                             f"{summary['accuracy']:.1%}" if summary["accuracy"] is not None else "—",
                                             f"{summary['mean_hit_rt_ms']:.1f}" if summary["mean_hit_rt_ms"] is not None else "—"))
-        tree.pack(fill="x", pady=(0, 16))
+        tree.pack(fill="x")
+        horizontal = ttk.Scrollbar(table, orient="horizontal", command=tree.xview)
+        horizontal.pack(fill="x")
+        tree.configure(xscrollcommand=horizontal.set)
         skipped = sum(r["status"] == "skipped" for r in self.rec.rows)
         late = sum(float(r["onset_lateness_ms"] or 0) > 50 for r in self.rec.rows)
         self.label(f, f"提示されなかった試行：{skipped}    提示遅延が50 msを超えた試行：{late}").pack(anchor="w")
