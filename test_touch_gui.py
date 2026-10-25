@@ -25,6 +25,7 @@ class TkTouchTests(unittest.TestCase):
         self.addCleanup(self.root.destroy)
         folder = self.enterContext(tempfile.TemporaryDirectory())
         self.app = App(self.root, demo=True)
+        self.root.state("normal")
         self.assertEqual(self.app.input_selection.get(), "タッチ")
         # Emulate exactly the supported viewport; no physical monitor setting is changed.
         self.root.geometry("1024x768+0+0")

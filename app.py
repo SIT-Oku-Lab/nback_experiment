@@ -161,6 +161,7 @@ class App:
         self.clear()
         self.phase = "setup"
         self.root.attributes("-fullscreen", False)
+        self.maximize_window()
         self.root.configure(cursor="", bg="#eeefed")
         self.frame = ttk.Frame(self.root)
         self.frame.pack(fill="both", expand=True)
@@ -251,15 +252,33 @@ class App:
         preview.pack(side="left", padx=(0, 14))
         self.draw_grid(preview, 50, 42, 72, sample=1)
         self.label(preview_row, "グレー背景・位置刺激。得点・残り時間・正誤・音なし。\n"
-                   "一致時のみ1回応答。タッチは横向き・1024×768以上・回転ロック。", "Muted.TLabel").pack(side="left", fill="x", expand=True)
+                   "一致時のみ1回応答。タッチは横向き・1024×768以上・回転ロック。\n"
+                   "生理信号は試行・課題終了ごとに保存。LabRecorder不要。", "Muted.TLabel").pack(side="left", fill="x", expand=True)
         ttk.Checkbutton(f, text="追加のLSLマーカー送出（任意・LabRecorder等で記録）", variable=self.lsl_enabled,
                         state="normal" if lsl_available else "disabled").pack(anchor="w")
-        self.label(f, "生理信号は試行・課題終了ごとに保存。LabRecorder不要。接続手順は手順書へ。", "Muted.TLabel").pack(anchor="w", pady=(2, 5))
         output_row = ttk.Frame(f)
         output_row.pack(fill="x")
         self.label(output_row, "保存先").pack(side="left", padx=(0, 12))
         ttk.Entry(output_row, textvariable=self.output).pack(side="left", fill="x", expand=True)
         ttk.Button(output_row, text="変更", style="Setup.TButton", command=self.choose_output).pack(side="left", padx=(8, 0))
+
+    def maximize_window(self):
+        try:
+            self.root.state("zoomed")
+        except tk.TclError:
+            # X11 uses an attribute for maximization instead of a window state.
+            try:
+                self.root.attributes("-zoomed", True)
+            except tk.TclError:
+                pass
+
+    @staticmethod
+    def component_scale(width, height):
+        """Preserve the reference layout's proportions within the actual viewport."""
+        return min(width / 1024, height / 768)
+
+    def canvas_scale(self):
+        return self.component_scale(self.canvas.winfo_width(), self.canvas.winfo_height())
 
     def on_wheel(self, event):
         if self.phase in ("setup", "results"):
@@ -433,7 +452,11 @@ class App:
         self.presented = set()
         self.rec.metadata.update(display={"width_px": self.canvas.winfo_width(), "height_px": self.canvas.winfo_height(),
                                           "tk_scaling": self.root.tk.call("tk", "scaling"),
-                                          "grid_size_px": 360, "gap_px": 8})
+                                          "layout_reference_px": [1024, 768],
+                                          "layout_scale": self.canvas_scale(),
+                                          "grid_size_px": 360 * self.canvas_scale(),
+                                          "gap_px": 8 * self.canvas_scale(),
+                                          "fixation_size_px": 12 * self.canvas_scale()})
         self.rec.metadata["input"] = {
             "mode": self.config.input_mode,
             "response_time_definition": "monotonic native-contact callback or Tk-handler entry; not physical contact time",
@@ -446,7 +469,7 @@ class App:
             native_touch = self.native_touch.install()
             self.rec.metadata["input"].update(
                 task_regions=self.touch_layout(*self.session_display[:2], "task"), abort_hold_ms=1500,
-                abort_move_margin_px=ABORT_MOVE_MARGIN, abort_outside_grace_ms=250,
+                abort_move_margin_px=ABORT_MOVE_MARGIN * self.canvas_scale(), abort_outside_grace_ms=250,
                 windows_touch=windows_touch,
                 native_touch=native_touch,
                 response_feedback={"kind": "grayscale_press", "minimum_ms": 150, "depends_on_scoring": False})
@@ -467,31 +490,32 @@ class App:
         x, y = c.winfo_width() / 2, c.winfo_height() / 2
         n = self.config.conditions[self.block_index]
         touch = self.config.input_mode == "touch"
-        font_size = lambda points: -round(points * 4 / 3)
-        c.create_text(x, y - 230, text=f"{n}-back", font=("Yu Gothic UI", font_size(32), "bold"), fill="#ededed")
+        scale = self.canvas_scale()
+        font_size = lambda points: -max(1, round(points * 4 / 3 * scale))
+        c.create_text(x, y - 230 * scale, text=f"{n}-back", font=("Yu Gothic UI", font_size(32), "bold"), fill="#ededed")
         action = "一致ボタンに1回触れてください。" if touch else "Space キーを1回押してください。"
         if n == 0:
             text = f"指定された位置（{POSITIONS[self.config.zero_target]}）に出たときだけ\n{action}"
-            self.draw_grid(c, x, y - 20, 156, sample=self.config.zero_target)
+            self.draw_grid(c, x, y - 20 * scale, 156 * scale, sample=self.config.zero_target, scale=scale)
         else:
             text = f"現在の位置が「2つ前」と同じときだけ\n{action}最初の2試行は見るだけです。"
-            self.draw_grid(c, x, y - 20, 156)
-        c.create_text(x, y - 155, text=text, justify="center", width=c.winfo_width() - 80,
+            self.draw_grid(c, x, y - 20 * scale, 156 * scale, scale=scale)
+        c.create_text(x, y - 155 * scale, text=text, justify="center", width=c.winfo_width() - 80 * scale,
                       font=("Yu Gothic UI", font_size(16)), fill="#ededed")
         duration = self.config.duration_ms // 1000
         duration_text = "10分間" if duration == 600 else f"{duration}秒間"
-        c.create_text(x, y + 108, text=f"{duration_text}、位置を見て判断してください。", font=("Yu Gothic UI", font_size(14)), fill="#ededed")
-        c.create_text(x, y + 168, text="準備ができたら下の開始に触れてください" if touch else "準備ができたら Enter", font=("Yu Gothic UI", font_size(18), "bold"), fill="#ededed")
+        c.create_text(x, y + 108 * scale, text=f"{duration_text}、位置を見て判断してください。", font=("Yu Gothic UI", font_size(14)), fill="#ededed")
+        c.create_text(x, y + 168 * scale, text="準備ができたら下の開始に触れてください" if touch else "準備ができたら Enter", font=("Yu Gothic UI", font_size(18), "bold"), fill="#ededed")
         stop = "中止は右上を1.5秒長押し。" if touch else "中止は Esc。"
-        c.create_text(x, y + 212, text=f"開始前に残り秒数を表示します。{stop}", font=("Yu Gothic UI", font_size(11)), fill="#e0e0e0")
+        c.create_text(x, y + 212 * scale, text=f"開始前に残り秒数を表示します。{stop}", font=("Yu Gothic UI", font_size(11)), fill="#e0e0e0")
         if self.block_index == 0 and self.config.baseline_s:
-            c.create_text(x, y + 245, text=f"最初に{self.config.baseline_s}秒間、中央を見て安静にしてください。", font=("Yu Gothic UI", font_size(11)), fill="#e0e0e0")
+            c.create_text(x, y + 245 * scale, text=f"最初に{self.config.baseline_s}秒間、中央を見て安静にしてください。", font=("Yu Gothic UI", font_size(11)), fill="#e0e0e0")
         self.render_touch_controls()
         self.root.update_idletasks()
 
     @staticmethod
-    def draw_grid(canvas, x, y, size, sample=None):
-        gap = 8 if size >= 300 else 4
+    def draw_grid(canvas, x, y, size, sample=None, scale=1):
+        gap = (8 if size / scale >= 300 else 4) * scale
         cell = (size - gap * 2) / 3
         items = []
         for position in range(9):
@@ -499,16 +523,18 @@ class App:
             left = x - size / 2 + col * (cell + gap)
             top = y - size / 2 + row * (cell + gap)
             item = canvas.create_rectangle(left, top, left + cell, top + cell, outline=GRID,
-                                           width=1, fill=STIMULUS if position == sample else BACKGROUND)
+                                           width=scale, fill=STIMULUS if position == sample else BACKGROUND)
             items.append(item)
-        canvas.create_line(x - 6, y, x + 6, y, fill=FIXATION, width=2)
-        canvas.create_line(x, y - 6, x, y + 6, fill=FIXATION, width=2)
+        canvas.create_line(x - 6 * scale, y, x + 6 * scale, y, fill=FIXATION, width=2 * scale)
+        canvas.create_line(x, y - 6 * scale, x, y + 6 * scale, fill=FIXATION, width=2 * scale)
         return items
 
     def neutral_screen(self):
         self.canvas.delete("all")
         self.start_cue_text = None
-        self.cells = self.draw_grid(self.canvas, self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2, 360)
+        scale = self.canvas_scale()
+        self.cells = self.draw_grid(self.canvas, self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2,
+                                    360 * scale, scale=scale)
         self.render_touch_controls()
         self.root.update_idletasks()
 
@@ -554,9 +580,10 @@ class App:
         if text == getattr(self, "start_cue_text", None):
             return
         self.canvas.delete("start-cue")
-        self.canvas.create_text(self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2 - 235,
-                                text=text, justify="center", width=self.canvas.winfo_width() - 80,
-                                font=("Yu Gothic UI", -22, "bold"), fill="#ededed", tags="start-cue")
+        scale = self.canvas_scale()
+        self.canvas.create_text(self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2 - 235 * scale,
+                                text=text, justify="center", width=self.canvas.winfo_width() - 80 * scale,
+                                font=("Yu Gothic UI", -max(1, round(22 * scale)), "bold"), fill="#ededed", tags="start-cue")
         self.start_cue_text = text
 
     def schedule_tick(self):
@@ -768,11 +795,13 @@ class App:
 
     @staticmethod
     def touch_layout(width, height, phase):
-        regions = {"abort": (width - 284, 24, width - 24, 112)}
+        scale = App.component_scale(width, height)
+        regions = {"abort": (width - 284 * scale, 24 * scale, width - 24 * scale, 112 * scale)}
         # Keep the response target visible from Start through the first stimulus.
         # respond() still accepts/scores responses only during the task phase.
         if phase in ("ready", "prepare", "baseline", "task"):
-            regions["start" if phase == "ready" else "response"] = (width / 2 - 160, height - 124, width / 2 + 160, height - 24)
+            regions["start" if phase == "ready" else "response"] = (width / 2 - 160 * scale, height - 124 * scale,
+                                                                    width / 2 + 160 * scale, height - 24 * scale)
         return regions
 
     def render_touch_controls(self):
@@ -781,13 +810,14 @@ class App:
             self.touch_regions = {}
             return
         self.canvas.delete("touch-control")
+        scale = self.canvas_scale()
         self.touch_regions = self.touch_layout(self.canvas.winfo_width(), self.canvas.winfo_height(), self.phase)
         for action, (left, top, right, bottom) in self.touch_regions.items():
-            self.canvas.create_rectangle(left, top, right, bottom, fill="#707070", outline="#dedede", width=2,
+            self.canvas.create_rectangle(left, top, right, bottom, fill="#707070", outline="#dedede", width=2 * scale,
                                          tags=("touch-control", action + "-face"))
             self.canvas.create_text((left + right) / 2, (top + bottom) / 2,
                                     text={"abort": "長押しで中止", "start": "開始", "response": "一致"}[action],
-                                    fill="#ededed", font=("Yu Gothic UI", -18 if action == "abort" else -26, "bold"),
+                                    fill="#ededed", font=("Yu Gothic UI", -max(1, round((18 if action == "abort" else 26) * scale)), "bold"),
                                     tags=("touch-control", action + "-label"))
         if self.abort_hold_start is not None:
             self.paint_abort_hold(max(0, (ABORT_HOLD_NS - (time.perf_counter_ns() - self.abort_hold_start)) / 1e9))
@@ -946,8 +976,9 @@ class App:
         if bounds is None:
             return False
         l, t, r, b = bounds
-        return (max(0, l - ABORT_MOVE_MARGIN) <= x < min(self.canvas.winfo_width(), r + ABORT_MOVE_MARGIN)
-                and max(0, t - ABORT_MOVE_MARGIN) <= y < min(self.canvas.winfo_height(), b + ABORT_MOVE_MARGIN))
+        margin = ABORT_MOVE_MARGIN * self.canvas_scale()
+        return (max(0, l - margin) <= x < min(self.canvas.winfo_width(), r + margin)
+                and max(0, t - margin) <= y < min(self.canvas.winfo_height(), b + margin))
 
     def cancel_abort_hold(self, reason=None, at=None):
         if reason is not None and self.abort_hold_start is not None:

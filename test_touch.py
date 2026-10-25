@@ -217,8 +217,10 @@ class InputTests(unittest.TestCase):
                 self.assertEqual("start" in regions, phase == "ready")
                 if phase in ("prepare", "baseline", "task"):
                     l, t, r, b = regions["response"]
-                    self.assertEqual((r - l, b - t, height - b), (320, 100, 24))
-                    self.assertGreater(t, height / 2 + 180)
+                    scale = App.component_scale(width, height)
+                    for observed, expected in zip((r - l, b - t, height - b), (320, 100, 24)):
+                        self.assertAlmostEqual(observed, expected * scale)
+                    self.assertGreater(t, height / 2 + 180 * scale)
 
     def use_real_finish(self, app):
         app.finish = types.MethodType(App.finish, app)
