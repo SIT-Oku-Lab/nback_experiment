@@ -191,12 +191,13 @@ class App:
             button = ttk.Button(buttons, text=text, style="Setup.TButton" if practice else "SetupPrimary.TButton",
                                 command=lambda p=practice: self.start(p))
             self.start_buttons.append(button)
-        manual_button = ttk.Button(buttons, text="手順書", style="Setup.TButton", command=self.open_manual)
+        manual_button = ttk.Button(buttons, text="手順書を開く", style="Setup.TButton", command=self.open_manual)
         def arrange_buttons(event):
             controls = self.start_buttons + [manual_button]
             wide = event.width >= sum(button.winfo_reqwidth() + 10 for button in controls)
+            buttons.columnconfigure(2, weight=1 if wide else 0)
             for index, button in enumerate(controls):
-                button.grid(row=0 if wide else index, column=index if wide else 0,
+                button.grid(row=0 if wide else index, column=(3 if index == 2 else index) if wide else 0,
                             sticky="ew", padx=(0, 10), pady=2)
         buttons.bind("<Configure>", arrange_buttons)
         self.label(footer, "タッチ：開始・一致／右上を長押しで中止　｜　キー：Enter・Space・Esc　｜　M：時刻マーカー",
@@ -209,6 +210,11 @@ class App:
         self.label(header, "空間 n-back 課題", "SetupTitle.TLabel").pack(side="left")
         duration = "動作確認：各12秒" if self.demo else "本実験：各10分／練習：各60秒"
         self.label(header, f"v{VERSION}　｜　{duration}", "Muted.TLabel").pack(side="right")
+        reference_header = ttk.Frame(f)
+        self.label(reference_header, "N-BACK  /  EXPERIMENT", "Muted.TLabel").pack(anchor="w")
+        self.label(reference_header, "空間 n-back 課題", "Title.TLabel").pack(anchor="w", pady=(3, 6))
+        self.label(reference_header, "0-back と 2-back を、同じ刺激画面・同じ応答方法で実施します。", "Muted.TLabel").pack(anchor="w")
+        self.label(reference_header, f"v{VERSION}  ·  OpenSignals 生理信号の同期受信・試行別保存", "Muted.TLabel").pack(anchor="w")
 
         lsl_available = importlib.util.find_spec("pylsl") is not None
         sensor = ttk.Frame(f)
@@ -231,12 +237,12 @@ class App:
 
         columns = ttk.Frame(f)
         columns.pack(fill="x")
-        left, right = ttk.Frame(columns), ttk.Frame(columns)
-        left.grid(row=0, column=0, sticky="nw")
-        right.grid(row=0, column=1, sticky="nw", padx=(28, 0))
+        left, right = ttk.Frame(f), ttk.Frame(f)
+        left.grid(in_=columns, row=0, column=0, sticky="nw")
+        right.grid(in_=columns, row=0, column=1, sticky="nw", padx=(28, 0))
         columns.columnconfigure(0, weight=1)
         columns.columnconfigure(1, weight=1)
-        self.label(left, "実施設定", "Heading.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        self.label(left, "実施の設定", "Heading.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
         self.form_row(left, 1, "参加者ID", self.participant, width=18)
         self.form_row(left, 2, "課題順序", self.order, tuple(ORDERS), width=18)
         self.form_row(left, 3, "入力方式", self.input_selection, tuple(INPUT_MODES), width=18)
@@ -244,8 +250,12 @@ class App:
         self.form_row(left, 5, "課題間の休憩（秒）", self.rest, width=10)
         self.label(left, "練習：安静なし・課題間休憩5秒。\n入力方式は開始後に変更できません。", "Muted.TLabel").grid(
             row=6, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        left_grid = [(widget, dict(widget.grid_info())) for widget in left.winfo_children()]
+        duration_title = self.label(left, "各課題の時間")
+        duration_value = self.label(left, "各12秒（動作確認）" if self.demo else "各10分", "Heading.TLabel")
 
-        self.label(right, "刺激・記録設定", "Heading.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        advanced_heading = self.label(right, "刺激・記録の設定", "Heading.TLabel")
+        advanced_heading.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
         self.form_row(right, 1, "提示間隔（ms）", self.interval, tuple(map(str, INTERVALS)), width=12)
         self.form_row(right, 2, "刺激提示（ms）", self.stimulus, width=12)
         self.form_row(right, 3, "ターゲット率（%）", self.target_percent, width=12)
@@ -257,7 +267,18 @@ class App:
         ttk.Button(seed_row, text="更新", style="Setup.TButton", command=lambda: self.seed.set(str(secrets.randbelow(2**32)))).pack(side="left", padx=(6, 0))
         self.label(right, "1試行＝提示間隔。次の刺激直前まで応答可。", "Muted.TLabel").grid(
             row=6, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        advanced_grid = [(widget, dict(widget.grid_info())) for widget in right.winfo_children()]
+        advanced = ttk.Frame(f)
+        participant = ttk.Frame(f)
+        self.label(participant, "参加者の画面", "Heading.TLabel").pack(anchor="w")
+        participant_note = self.label(participant, "グレー背景・固定グリッド・位置刺激のみ。\n"
+                                      "得点、残り時間、正誤表示、効果音はありません。\n"
+                                      "タッチ：一致ボタン／キーボード：Space。", "Muted.TLabel", wraplength=500)
+        participant_note.pack(anchor="w", pady=(10, 0))
+        self.setup_reference_layout = False
         def arrange_columns(event):
+            if self.setup_reference_layout:
+                return
             wide = event.width >= left.winfo_reqwidth() + right.winfo_reqwidth() + 28
             right.grid(row=0 if wide else 1, column=1 if wide else 0, sticky="nw",
                        padx=(28 if wide else 0, 0), pady=(0 if wide else 12, 0))
@@ -266,8 +287,8 @@ class App:
         preview_row = ttk.Frame(f)
         preview_row.pack(fill="both", expand=True, pady=(8, 5))
         self.setup_information = preview_row
-        preview = tk.Canvas(preview_row, width=100, height=84, bg=BACKGROUND, highlightthickness=0)
-        preview.pack(side="left", padx=(0, 14))
+        preview = tk.Canvas(f, width=100, height=84, bg=BACKGROUND, highlightthickness=0)
+        preview.pack(in_=preview_row, side="left", padx=(0, 14))
         self.setup_preview = preview
         compact = self.label(preview_row, "0-back：指定位置／2-back：2つ前（最初の2試行は見るだけ）。\n"
                              "実施前：ID・順序・保存先・信号を確認。横向き・回転ロック。\n"
@@ -315,7 +336,7 @@ class App:
 
         def arrange_details():
             nonlocal details_layout
-            width = max(100, f.winfo_width() - 48 - 240 - 14)
+            width = max(100, f.winfo_width() - 48 - (0 if self.setup_reference_layout else 254))
             columns = 3 if width >= 1500 else 1
             wrap = max(100, (width - 12 * (columns - 1)) // columns - 36)
             if details_layout == (columns, wrap):
@@ -331,7 +352,7 @@ class App:
             for label in (summary_label, rule_label, check_label, trial_label, input_label, saved_label):
                 label.configure(wraplength=wrap)
             queue_layout()
-        details.bind("<Configure>", lambda e: f.refresh_layout())
+        details.bind("<Configure>", lambda e: queue_layout())
         self.setup_information_expanded = False
 
         def redraw_preview(event=None):
@@ -359,6 +380,54 @@ class App:
             queue_layout()
 
         def fit_information(event=None):
+            reference = f.winfo_width() >= 1800 and self.setup_scroll.winfo_height() >= 1000
+            if reference != self.setup_reference_layout:
+                self.setup_reference_layout = reference
+                preview.pack_forget()
+                right.grid_forget()
+                if reference:
+                    header.pack_forget()
+                    reference_header.pack(before=sensor, fill="x")
+                    participant.grid(in_=columns, row=0, column=1, sticky="nw", padx=(35, 0))
+                    preview.configure(width=210, height=160)
+                    preview.pack(in_=participant, before=participant_note, anchor="w", pady=(12, 0))
+                    for widget, original in left_grid:
+                        row = int(original["row"])
+                        if row in (3, 6):
+                            widget.grid(row=6 if row == 3 else 7)
+                    duration_title.grid(row=3, column=0, sticky="w", padx=(0, 12), pady=3)
+                    duration_value.grid(row=3, column=1, sticky="w", pady=3)
+                    advanced.pack(before=preview_row, fill="x", pady=(12, 0))
+                    right.grid(in_=advanced, row=0, column=0, sticky="nw")
+                    for widget, original in advanced_grid:
+                        row = int(original["row"])
+                        column = int(original["column"])
+                        if row == 0:
+                            widget.grid(columnspan=4)
+                        elif row in (4, 5):
+                            widget.grid(row=row - 3, column=column + 2, padx=(28 if column == 0 else 0, 12))
+                        elif row == 6:
+                            widget.grid(row=4, columnspan=4)
+                else:
+                    reference_header.pack_forget()
+                    header.pack(before=sensor, fill="x")
+                    participant.grid_forget()
+                    advanced.pack_forget()
+                    duration_title.grid_forget()
+                    duration_value.grid_forget()
+                    for widget, original in left_grid:
+                        settings = dict(original)
+                        settings["in_"] = settings.pop("in")
+                        widget.grid(**settings)
+                    for widget, original in advanced_grid:
+                        settings = dict(original)
+                        settings["in_"] = settings.pop("in")
+                        widget.grid(**settings)
+                    right.grid(in_=columns, row=0, column=1, sticky="nw", padx=(28, 0))
+                    preview.configure(width=240 if self.setup_information_expanded else 100,
+                                      height=240 if self.setup_information_expanded else 84)
+                    preview.pack(in_=preview_row, side="left", padx=(0, 14))
+                queue_layout()
             arrange_details()
             available = self.setup_scroll.winfo_height() - (f.winfo_reqheight() - preview_row.winfo_reqheight())
             expanded = available >= max(240, details.winfo_reqheight()) + 16 and f.winfo_width() >= 1200
@@ -366,11 +435,13 @@ class App:
                 self.setup_information_expanded = expanded
                 if expanded:
                     compact.pack_forget()
-                    preview.configure(width=240, height=240)
+                    if not reference:
+                        preview.configure(width=240, height=240)
                     details.pack(side="left", fill="both", expand=True)
                 else:
                     details.pack_forget()
-                    preview.configure(width=100, height=84)
+                    if not reference:
+                        preview.configure(width=100, height=84)
                     compact.pack(side="left", fill="x", expand=True)
                 queue_layout()
         def queue_layout():
@@ -383,6 +454,8 @@ class App:
             fit_information()
         preview.bind("<Configure>", redraw_preview)
         preview.bind("<Configure>", lambda e: f.refresh_layout(), add="+")
+        columns.bind("<Configure>", lambda e: queue_layout(), add="+")
+        advanced.bind("<Configure>", lambda e: queue_layout())
         f.bind("<Configure>", fit_information, add="+")
         self.setup_scroll.bind("<Configure>", fit_information, add="+")
         for variable in (self.order, self.baseline, self.rest, self.input_selection, self.target_position,

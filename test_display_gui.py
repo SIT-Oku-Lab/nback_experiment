@@ -6,6 +6,7 @@ import tempfile
 import tkinter as tk
 from tkinter import ttk
 import unittest
+from unittest.mock import call, patch
 
 from app import App
 from engine import Config
@@ -82,7 +83,7 @@ class SurfaceLayoutTests(unittest.TestCase):
                                              self.root.winfo_rooty() + self.root.winfo_height())
 
     def test_information_uses_lower_space_and_collapses_without_overflow(self):
-        for width, height, expanded in ((2196, 1314, True), (1464, 876, False), (2196, 1314, True)):
+        for width, height, expanded in ((2196, 1800, True), (1464, 876, False), (2196, 1800, True)):
             self.root.geometry(f"{width}x{height}+0+0")
             self.root.update()
             self.assertEqual(self.app.setup_information_expanded, expanded)
@@ -131,7 +132,7 @@ class SurfaceLayoutTests(unittest.TestCase):
         self.assertEqual(self.app.order.trace_info(), [])
 
     def test_maximized_information_uses_horizontal_space_without_clipping(self):
-        self.root.geometry("2196x1314+0+0")
+        self.root.geometry("2196x1800+0+0")
         self.root.update()
         self.assertTrue(self.app.setup_information_expanded)
         cards = self.app.setup_information_cards
@@ -142,8 +143,8 @@ class SurfaceLayoutTests(unittest.TestCase):
         area = self.app.setup_information
         self.assertLessEqual(abs(cards[-1].winfo_rootx() + cards[-1].winfo_width()
                                  - area.winfo_rootx() - area.winfo_width()), 8)
-        self.assertLess(self.app.setup_preview.winfo_rootx() + self.app.setup_preview.winfo_width(),
-                        cards[0].winfo_rootx())
+        self.assertLess(self.app.setup_preview.winfo_rooty() + self.app.setup_preview.winfo_height(),
+                        cards[0].winfo_rooty())
         self.app.baseline.set("300")
         self.app.rest.set("600")
         self.root.update()
@@ -158,6 +159,38 @@ class SurfaceLayoutTests(unittest.TestCase):
             self.assertLessEqual(card.winfo_rooty() + card.winfo_height()
                                  - label.winfo_rooty() - label.winfo_height(), 18)
         self.assert_no_horizontal_clipping()
+        self.assertEqual(self.app.setup_scroll.yview(), (0.0, 1.0))
+
+    def test_develop_maximized_section_order_preserves_controls_and_start_actions(self):
+        self.root.geometry("2196x1314+0+0")
+        self.root.update()
+        self.assertTrue(self.app.setup_reference_layout)
+        widgets = list(self.descendants(self.app.frame))
+        def control(variable):
+            return next(w for w in widgets if isinstance(w, (ttk.Entry, ttk.Combobox))
+                        and str(w.cget("textvariable")) == str(variable))
+        participant = control(self.app.participant)
+        baseline = control(self.app.baseline)
+        interval = control(self.app.interval)
+        target = control(self.app.target_position)
+        preview = self.app.setup_preview
+        self.assertGreater(preview.winfo_rootx(), participant.winfo_rootx() + participant.winfo_width())
+        self.assertGreater(interval.winfo_rooty(), baseline.winfo_rooty() + baseline.winfo_height())
+        self.assertGreater(interval.winfo_rooty(), preview.winfo_rooty() + preview.winfo_height())
+        self.assertEqual(interval.winfo_rooty(), target.winfo_rooty())
+        self.assertEqual(self.app.setup_scroll.yview(), (0.0, 1.0))
+        self.assert_no_horizontal_clipping()
+        for variable in (self.app.participant, self.app.order, self.app.input_selection, self.app.baseline, self.app.rest,
+                         self.app.interval, self.app.stimulus, self.app.target_percent, self.app.target_position,
+                         self.app.seed, self.app.output):
+            self.assertTrue(control(variable).winfo_ismapped())
+        with patch.object(self.app, "start") as start:
+            for button in self.app.start_buttons:
+                button.invoke()
+            self.assertEqual(start.call_args_list, [call(False), call(True)])
+        self.root.geometry("1464x876+0+0")
+        self.root.update()
+        self.assertFalse(self.app.setup_reference_layout)
         self.assertEqual(self.app.setup_scroll.yview(), (0.0, 1.0))
 
     def test_trial_counts_input_guide_and_recording_guide_follow_settings(self):
