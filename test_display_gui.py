@@ -61,6 +61,8 @@ class SurfaceLayoutTests(unittest.TestCase):
         # 150% Windows scaling = 144 DPI / 72 points per inch.
         self.root.tk.call("tk", "scaling", 2.0)
         self.app = App(self.root)
+        # Layout/config tests never connect to a device, even when pylsl is installed.
+        self.app.physiology_enabled.set(False)
         self.initial_window_state = self.root.state()
         self.root.state("normal")
 

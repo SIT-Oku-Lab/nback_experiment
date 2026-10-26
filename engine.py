@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 import math
 import random
 
-VERSION = "1.2.14"
+VERSION = "1.3.0"
 BACKGROUND = "#808080"
 GRID = "#737373"
 STIMULUS = "#bfbfbf"
@@ -30,6 +30,7 @@ class Config:
     physiology_uid: str = ""
     physiology_name: str = ""
     input_mode: str = "keyboard"
+    ecg_channel: int = 0  # 0=auto, -1=disabled, otherwise 1-based LSL column
 
     @property
     def duration_ms(self) -> int:
@@ -40,6 +41,8 @@ class Config:
         return 1 if self.mode == "demo" else 5
 
     def validate(self) -> None:
+        if not isinstance(self.ecg_channel, int) or self.ecg_channel < -1:
+            raise ValueError("ECG列は0（自動）、-1（無効）、または1以上のLSL列番号にしてください。")
         if self.input_mode not in ("touch", "keyboard"):
             raise ValueError("入力方式はタッチまたはキーボードを選択してください。")
         if not self.participant or len(self.participant) > 64:

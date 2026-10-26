@@ -14,6 +14,7 @@ environment["PYTHONPATH"] = str(deps)
 environment["PYINSTALLER_CONFIG_DIR"] = str(root / "build" / "cache")
 subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
                 "--windowed", "--name", "NBackExperiment", "--collect-all", "pylsl",
+                "--collect-all", "wfdb",
                 "--distpath", str(root / "dist" / release), "--workpath", str(root / "build" / release),
                 "--specpath", str(root), str(root / "app.py")],
                cwd=root, env=environment, check=True)

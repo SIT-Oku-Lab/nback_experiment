@@ -35,9 +35,10 @@ ABORT_OUTSIDE_GRACE_NS = 250_000_000
 
 
 class App:
-    def __init__(self, root: tk.Tk, demo: bool = False):
+    def __init__(self, root: tk.Tk, demo: bool = False, ecg_channel: int = 0):
         self.root = root
         self.demo = demo
+        self.ecg_channel = ecg_channel
         self.root.title("N-back 実験 | 0-back / 2-back")
         setup_width = min(1020, self.root.winfo_screenwidth() - 40)
         setup_height = min(850, self.root.winfo_screenheight() - 100)
@@ -609,6 +610,7 @@ class App:
                          mode="practice" if practice else "experiment", lsl=self.lsl_enabled.get(),
                          input_mode=INPUT_MODES[self.input_selection.get()],
                          physiology=self.physiology_enabled.get(),
+                         ecg_channel=getattr(self, "ecg_channel", 0),
                          physiology_uid=self.streams[self.stream_selection.get()].uid() if self.stream_selection.get() in self.streams else "",
                          physiology_name=self.streams[self.stream_selection.get()].name() if self.stream_selection.get() in self.streams else "")
         except (ValueError, KeyError):
@@ -1422,6 +1424,14 @@ class App:
             self.label(f, f"生理信号サンプル：{summary.get('samples', '—')}    保存区間：{summary.get('segments', '—')}    不完全な区間：{summary.get('incomplete_segments', '—')}", "Muted.TLabel").pack(anchor="w", pady=(0, 8))
             if report.get("error"):
                 self.label(f, "生理計測エラー：" + report["error"], "Muted.TLabel", wraplength=880).pack(anchor="w", pady=(0, 8))
+            ecg = self.rec.metadata.get("ecg", {})
+            if ecg:
+                ecg_status = {"computed": "HR・HRVの解析記録を保存しました（拍・品質の確認が必要）",
+                              "unavailable": "算出対象外", "no_beats_detected": "拍を検出できませんでした",
+                              "failed": "解析を完了できませんでした。元の生理信号の保存状態は上記をご確認ください。"}
+                self.label(f, "ECG解析：" + ecg_status.get(ecg.get("status"), "") + "　" + ecg.get("reason", "") +
+                           "\nphysiology/ecg/：拍ごとのHR・RR、60秒/300秒HRV、試行・課題別集計。品質判定を確認してください。",
+                           "Muted.TLabel", wraplength=880).pack(anchor="w", pady=(0, 8))
         ttk.Button(f, text="保存フォルダを開く", command=lambda: os.startfile(self.rec.path)).pack(anchor="w", pady=(0, 10))
         ttk.Button(f, text="設定画面へ", style="Primary.TButton", command=self.show_setup).pack(anchor="w")
 
@@ -1455,6 +1465,8 @@ class App:
 def main():
     parser = argparse.ArgumentParser(description="空間0-back / 2-back実験")
     parser.add_argument("--demo", action="store_true", help="各12秒のGUI動作確認。mode=demoとして保存")
+    parser.add_argument("--ecg-channel", type=int, default=0,
+                        help="ECGのLSL列番号（1始まり）。0=ラベルから自動識別、-1=ECG解析を無効化")
     args = parser.parse_args()
     if sys.platform == "win32":
         try:
@@ -1463,7 +1475,7 @@ def main():
         except (AttributeError, OSError):
             pass
     root = tk.Tk()
-    App(root, demo=args.demo)
+    App(root, demo=args.demo, ecg_channel=args.ecg_channel)
     root.mainloop()
 
 
