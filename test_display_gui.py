@@ -193,6 +193,39 @@ class SurfaceLayoutTests(unittest.TestCase):
         self.assertFalse(self.app.setup_reference_layout)
         self.assertEqual(self.app.setup_scroll.yview(), (0.0, 1.0))
 
+    def test_stimulus_controls_remain_unobscured_after_layout_switches(self):
+        # ismapped() stays true even when a later-created sibling covers a frame.
+        for width, height in ((2196, 1314), (1464, 876), (2196, 1314)):
+            with self.subTest(viewport=(width, height)):
+                self.root.geometry(f"{width}x{height}+0+0")
+                self.root.lift()
+                self.root.update()
+                widgets = list(self.descendants(self.app.frame))
+                controls = [next(w for w in widgets if isinstance(w, (ttk.Entry, ttk.Combobox))
+                                 and str(w.cget("textvariable")) == str(variable))
+                            for variable in (self.app.interval, self.app.stimulus, self.app.target_percent,
+                                             self.app.target_position, self.app.seed)]
+                settings = controls[0].master
+                # Include field labels, the section heading, and the seed button.
+                for widget in self.descendants(settings):
+                    if not isinstance(widget, (ttk.Label, ttk.Entry, ttk.Combobox, ttk.Button)):
+                        continue
+                    with self.subTest(widget=str(widget)):
+                        self.assertTrue(widget.winfo_ismapped())
+                        x = widget.winfo_rootx() + widget.winfo_width() // 2
+                        y = widget.winfo_rooty() + widget.winfo_height() // 2
+                        self.assertIs(self.root.winfo_containing(x, y), widget)
+                self.app.interval.set("1500")
+                self.app.stimulus.set("400")
+                self.app.target_percent.set("40")
+                self.app.target_position.set("9 右下")
+                seed_button = next(w for w in self.descendants(settings) if isinstance(w, ttk.Button))
+                with patch("app.secrets.randbelow", return_value=12345):
+                    seed_button.invoke()
+                config = self.app.read_config(False)
+                self.assertEqual((config.interval_ms, config.stimulus_ms, config.target_percent,
+                                  config.zero_target, config.seed), (1500, 400, 40, 8, 12345))
+
     def test_trial_counts_input_guide_and_recording_guide_follow_settings(self):
         self.assertIn("各200試行", self.app.setup_trial_summary.get())
         self.assertIn("2-back 198", self.app.setup_trial_summary.get())

@@ -237,6 +237,9 @@ class App:
 
         columns = ttk.Frame(f)
         columns.pack(fill="x")
+        # Both geometry containers must stay below the re-gridded settings frame.
+        # Tk keeps sibling stacking order when grid(in_=...) moves a widget.
+        advanced = ttk.Frame(f)
         left, right = ttk.Frame(f), ttk.Frame(f)
         left.grid(in_=columns, row=0, column=0, sticky="nw")
         right.grid(in_=columns, row=0, column=1, sticky="nw", padx=(28, 0))
@@ -268,7 +271,6 @@ class App:
         self.label(right, "1試行＝提示間隔。次の刺激直前まで応答可。", "Muted.TLabel").grid(
             row=6, column=0, columnspan=2, sticky="w", pady=(5, 0))
         advanced_grid = [(widget, dict(widget.grid_info())) for widget in right.winfo_children()]
-        advanced = ttk.Frame(f)
         participant = ttk.Frame(f)
         self.label(participant, "参加者の画面", "Heading.TLabel").pack(anchor="w")
         participant_note = self.label(participant, "グレー背景・固定グリッド・位置刺激のみ。\n"
