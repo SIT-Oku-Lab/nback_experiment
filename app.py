@@ -384,34 +384,39 @@ class App:
             redraw_preview()
             queue_layout()
 
-        reference_roomy = None
+        reference_spacing = None
         def fit_information(event=None):
-            nonlocal reference_roomy
-            reference = f.winfo_width() >= 1800 and self.setup_scroll.winfo_height() >= 1000
-            roomy = self.setup_scroll.winfo_height() >= 1300
-            if reference != self.setup_reference_layout or reference and roomy != reference_roomy:
+            nonlocal reference_spacing
+            # Tk reports effective coordinates on DPI-virtualized Windows.
+            # Compare viewport size in the same scale as the point-sized fonts.
+            layout_scale = float(self.root.tk.call("tk", "scaling")) / 2.0
+            reference = f.winfo_width() >= 1800 * layout_scale and self.setup_scroll.winfo_height() >= 1000 * layout_scale
+            spacing = 2 if self.setup_scroll.winfo_height() >= 1300 else 0 if self.setup_scroll.winfo_height() < 850 else 1
+            roomy, tight = spacing == 2, spacing == 0
+            if reference != self.setup_reference_layout or reference and spacing != reference_spacing:
                 self.setup_reference_layout = reference
-                reference_roomy = roomy
+                reference_spacing = spacing
                 if not preview_row.winfo_manager():
                     preview_row.pack(before=marker_control, fill="both", expand=True, pady=(8, 5))
                 preview.pack_forget()
                 right.grid_forget()
                 if reference:
-                    row_gap = 5 if roomy else 3
-                    section_gap = 18 if roomy else 12
-                    f.configure(padding=(36, 25 if roomy else 16, 25, 8))
-                    sensor.pack_configure(pady=(14, 0))
-                    stream_row.pack_configure(pady=(7, 5))
+                    row_gap = 5 if roomy else 2 if tight else 3
+                    section_gap = 18 if roomy else 8 if tight else 12
+                    f.configure(padding=(36, 25 if roomy else 12 if tight else 16, 25, 8))
+                    sensor.pack_configure(pady=(6 if tight else 14, 0))
+                    stream_row.pack_configure(pady=(3, 2) if tight else (7, 5))
                     sensor_note.pack(anchor="w", pady=(3, 0))
                     section_separators[0].pack(before=columns, fill="x", pady=section_gap)
-                    header.pack_forget()
-                    reference_header.pack(before=sensor, fill="x")
+                    (reference_header if tight else header).pack_forget()
+                    (header if tight else reference_header).pack(before=sensor, fill="x")
                     participant.grid(in_=columns, row=0, column=1, sticky="nw", padx=(35, 0))
-                    preview.configure(width=210, height=160)
-                    preview.pack(in_=participant, before=participant_note, anchor="w", pady=(12, 0))
+                    preview.configure(width=140 if tight else 210, height=106 if tight else 160)
+                    preview.pack(in_=participant, before=participant_note, anchor="w", pady=(6 if tight else 12, 0))
+                    participant_note.pack_configure(pady=(6 if tight else 10, 0))
                     for widget, original in left_grid:
                         row = int(original["row"])
-                        widget.grid(pady=(0, 12 if roomy else 8) if row == 0 else (8, 0) if row == 6 else row_gap)
+                        widget.grid(pady=(0, 12 if roomy else 4 if tight else 8) if row == 0 else (8, 0) if row == 6 else row_gap)
                         if row in (3, 6):
                             widget.grid(row=6 if row == 3 else 7)
                     duration_title.grid(row=3, column=0, sticky="w", padx=(0, 12), pady=3)
@@ -424,13 +429,13 @@ class App:
                         column = int(original["column"])
                         widget.grid(pady=row_gap)
                         if row == 0:
-                            widget.grid(columnspan=4, pady=(0, 8))
+                            widget.grid(columnspan=4, pady=(0, 4 if tight else 8))
                         elif row in (4, 5):
                             widget.grid(row=row - 3, column=column + 2, padx=(28 if column == 0 else 0, 12))
                         elif row == 6:
-                            widget.grid(row=4, columnspan=4, pady=(7, 8))
-                    recording_note.pack(before=output_row, anchor="w", pady=(3, 8))
-                    output_row.pack_configure(pady=(0, 12 if roomy else 8))
+                            widget.grid(row=4, columnspan=4, pady=(7, 4 if tight else 8))
+                    recording_note.pack(before=output_row, anchor="w", pady=(2, 4) if tight else (3, 8))
+                    output_row.pack_configure(pady=(0, 12 if roomy else 4 if tight else 8))
                 else:
                     f.configure(padding=(24, 8, 24, 8))
                     sensor.pack_configure(pady=(6, 8))
@@ -1381,10 +1386,7 @@ class App:
                        "display_unsupported": "タッチ操作の画面条件を満たしていないため",
                        "window_closed": "ウィンドウを閉じたため", "lsl_send_failed": "LSL送出エラー", "error": "アプリケーションエラー",
                        "physiology_stream_error": "OpenSignalsの生理信号の切断・時計同期・保存エラー"}
-            message = reasons.get(reason, reason)
-            if reason == "physiology_stream_error":
-                message = self.rec.metadata.get("physiology", {}).get("error") or message
-            self.label(f, "中止理由：" + message, wraplength=880).pack(anchor="w", pady=(8, 0))
+            self.label(f, "中止理由：" + reasons.get(reason, reason)).pack(anchor="w", pady=(8, 0))
         self.label(f, "成績は実験者向けです。次の課題まで参加者に見せない運用もできます。", "Muted.TLabel").pack(anchor="w", pady=(10, 15))
         table = ttk.Frame(f)
         table.pack(fill="x", pady=(0, 16))
