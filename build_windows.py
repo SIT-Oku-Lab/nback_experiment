@@ -4,15 +4,17 @@ import os
 import shutil
 import subprocess
 import sys
+from engine import VERSION
 
 root = Path(__file__).resolve().parent
-release = "v1.1.0"
+release = f"v{VERSION}"
 deps = root / ".build_deps"
 environment = os.environ.copy()
 environment["PYTHONPATH"] = str(deps)
 environment["PYINSTALLER_CONFIG_DIR"] = str(root / "build" / "cache")
 subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
                 "--windowed", "--name", "NBackExperiment", "--collect-all", "pylsl",
+                "--collect-all", "wfdb",
                 "--distpath", str(root / "dist" / release), "--workpath", str(root / "build" / release),
                 "--specpath", str(root), str(root / "app.py")],
                cwd=root, env=environment, check=True)
