@@ -1,15 +1,15 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if exist "%~dp0dist\v1.2.11\NBackExperiment\NBackExperiment.exe" (
-    start "" "%~dp0dist\v1.2.11\NBackExperiment\NBackExperiment.exe"
+if exist "%~dp0dist\v1.2.12\NBackExperiment\NBackExperiment.exe" (
+    start "" "%~dp0dist\v1.2.12\NBackExperiment\NBackExperiment.exe" %*
     exit /b
 )
 where python >nul 2>nul
 if not errorlevel 1 (
-    python "%~dp0app.py"
+    python "%~dp0app.py" %*
     if errorlevel 1 pause
     exit /b
 )
-echo NBackExperiment v1.2.11 or Python 3.10 or later with tkinter is required. See README_ja.md.
+echo NBackExperiment v1.2.12 or Python 3.10 or later with tkinter is required. See README_ja.md.
 pause

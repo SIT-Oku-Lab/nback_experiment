@@ -13,6 +13,45 @@ from engine import Config
 from storage import Recorder
 
 
+class EffectiveScalingLayoutTests(unittest.TestCase):
+    def descendants(self, widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from self.descendants(child)
+
+    def test_reference_layout_uses_effective_coordinates_at_native_scaling(self):
+        for scaling, width, height, reference in ((4 / 3, 1464, 876, True),
+                                                   (4 / 3, 1920, 1010, True),
+                                                   (2.0, 2196, 1314, True),
+                                                   (2.0, 1464, 876, False)):
+            with self.subTest(scaling=scaling, viewport=(width, height)):
+                root = tk.Tk()
+                app = None
+                try:
+                    root.maxsize(4000, 3000)
+                    root.tk.call("tk", "scaling", scaling)
+                    app = App(root)
+                    root.state("normal")
+                    root.geometry(f"{width}x{height}+0+0")
+                    root.update()
+                    self.assertEqual(app.setup_reference_layout, reference)
+                    self.assertEqual(app.setup_scroll.yview(), (0.0, 1.0))
+                    if reference:
+                        widgets = self.descendants(app.frame)
+                        entries = {str(w.cget("textvariable")): w for w in widgets
+                                   if isinstance(w, (ttk.Entry, ttk.Combobox))}
+                        participant = entries[str(app.participant)]
+                        interval = entries[str(app.interval)]
+                        self.assertGreater(app.setup_preview.winfo_rootx(), participant.winfo_rootx())
+                        self.assertGreater(interval.winfo_rooty(), app.setup_preview.winfo_rooty()
+                                           + app.setup_preview.winfo_height())
+                        self.assertFalse(app.setup_information.winfo_ismapped())
+                finally:
+                    if app is not None:
+                        app.clear()
+                    root.destroy()
+
+
 class SurfaceLayoutTests(unittest.TestCase):
     def setUp(self):
         self.root = tk.Tk()
