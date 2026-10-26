@@ -1,14 +1,17 @@
 import csv
 from dataclasses import replace
 import json
+import math
 from pathlib import Path
+import queue
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import patch
 
 from engine import Config
-from physiology import PhysiologyCapture, Sample, SegmentWriter
+from physiology import ClockCorrection, PhysiologyCapture, Sample, SegmentWriter
 from storage import Recorder
 
 
@@ -122,7 +125,100 @@ class WriterTests(unittest.TestCase):
             writer.close(FakeClock.perf_ns + 40_000_000_000)
 
 
+class ClockCorrectionTests(unittest.TestCase):
+    def test_offset_updates_do_not_reverse_microsecond_spaced_samples(self):
+        correction = ClockCorrection(0)
+        stamps = [100, 100.000004, 100.000008, 100.000012]
+        measured = [0, -.000025, -.000025, .000025]
+        mapped = [correction.apply(remote, offset) for remote, offset in zip(stamps, measured)]
+        self.assertTrue(all(b > a for a, b in zip(mapped, mapped[1:])))
+        for a, b, raw_a, raw_b in zip(mapped, mapped[1:], stamps, stamps[1:]):
+            self.assertAlmostEqual((b - a) / (raw_b - raw_a), 1, delta=.010001)
+
+    def test_small_update_converges_and_keeps_real_source_gaps(self):
+        for target in (-.0002, .0002):
+            correction = ClockCorrection(0)
+            first = correction.apply(100, 0)
+            second = correction.apply(100.01, target)
+            self.assertAlmostEqual(correction.applied_s, target / 2)
+            third = correction.apply(100.02, target)
+            self.assertAlmostEqual(correction.applied_s, target)
+            fourth = correction.apply(100.52, target)
+            self.assertAlmostEqual(fourth - third, .5)
+            self.assertGreater(second, first)
+
+    def test_invalid_source_stamps_and_clock_discontinuities_still_fail(self):
+        for remote, measured in ((100, 0), (99, 0), (math.nan, 0),
+                                 (math.inf, 0), (101, math.nan), (101, math.inf),
+                                 (101, .101), (101, -.101)):
+            with self.subTest(remote=remote, measured=measured):
+                correction = ClockCorrection(0)
+                correction.apply(100, 0)
+                with self.assertRaises(ValueError):
+                    correction.apply(remote, measured)
+        with self.assertRaises(ValueError):
+            ClockCorrection(math.nan).apply(100, 0)
+
+
 class CaptureTests(unittest.TestCase):
+    def test_acquisition_saves_burst_across_negative_clock_offset_update(self):
+        # Reproduce OpenSignals: consecutive source stamps 4 us apart and a
+        # -25 us offset refresh. Direct replacement reverses the second stamp.
+        with tempfile.TemporaryDirectory() as folder:
+            capture = PhysiologyCapture.__new__(PhysiologyCapture)
+            capture.parent, capture.clock = Path(folder), FakeClock()
+            capture.commands = queue.Queue()
+            capture.ready, capture.done, capture.cancel = (threading.Event() for _ in range(3))
+            capture.error, capture.last_arrival_ns = "", None
+            capture.stream = {"nominal_srate": 1000, "channel_count": 2}
+            state = types.SimpleNamespace(elapsed=0, pulls=0)
+            channel = types.SimpleNamespace(child_value=lambda key: "", next_sibling=lambda: channel)
+            channel.child = lambda key: channel
+            capture.info = types.SimpleNamespace(desc=lambda: channel, channel_count=lambda: 2,
+                                                 as_xml=lambda: "<info/>")
+
+            class Inlet:
+                def open_stream(self, **kwargs):
+                    pass
+
+                def info(self, **kwargs):
+                    return capture.info
+
+                def time_correction(self, **kwargs):
+                    return -.000025 if state.pulls >= 2 else 0
+
+                def pull_chunk(self, **kwargs):
+                    state.pulls += 1
+                    state.elapsed += 1.01
+                    if state.pulls == 2:
+                        capture.commands.put(("finish", (FakeClock.perf_ns + 800_000_000,)))
+                    return [[state.pulls, -state.pulls]], [100.8 + (state.pulls - 1) * .000004]
+
+                def close_stream(self):
+                    pass
+
+            lsl = types.SimpleNamespace(StreamInlet=lambda *args, **kwargs: Inlet(), local_clock=lambda: 100)
+            clock = types.SimpleNamespace(monotonic=lambda: state.elapsed,
+                                          perf_counter_ns=lambda: FakeClock.perf_ns + round(state.elapsed * 1e9))
+            with patch.dict("sys.modules", pylsl=lsl), patch("physiology.time", clock):
+                capture.run()
+            self.assertTrue(capture.done.is_set())
+            self.assertEqual(capture.error, "")
+            with (Path(folder) / "physiology/continuous.csv").open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual([float(row["lsl_remote_s"]) for row in rows], [100.8, 100.800004])
+            self.assertEqual([row["ch_1"] for row in rows], ["1", "2"])
+            self.assertGreater(float(rows[1]["session_ms"]), float(rows[0]["session_ms"]))
+            self.assertAlmostEqual(float(rows[1]["lsl_measured_correction_s"]), -.000025)
+            self.assertGreater(float(rows[1]["clock_correction_s"]), -.000025)
+            for row in rows:
+                self.assertAlmostEqual(float(row["lsl_local_s"]),
+                                       float(row["lsl_remote_s"]) + float(row["clock_correction_s"]))
+            summary = json.loads((Path(folder) / "physiology/summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["samples"], 2)
+            self.assertEqual(summary["error"], "")
+
     def test_stale_signal_is_an_error(self):
         capture = PhysiologyCapture.__new__(PhysiologyCapture)
         capture.error = ""

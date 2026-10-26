@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 import math
 import random
 
-VERSION = "1.1.0"
+VERSION = "1.2.14"
 BACKGROUND = "#808080"
 GRID = "#737373"
 STIMULUS = "#bfbfbf"
@@ -29,6 +29,7 @@ class Config:
     physiology: bool = False
     physiology_uid: str = ""
     physiology_name: str = ""
+    input_mode: str = "keyboard"
 
     @property
     def duration_ms(self) -> int:
@@ -39,6 +40,8 @@ class Config:
         return 1 if self.mode == "demo" else 5
 
     def validate(self) -> None:
+        if self.input_mode not in ("touch", "keyboard"):
+            raise ValueError("入力方式はタッチまたはキーボードを選択してください。")
         if not self.participant or len(self.participant) > 64:
             raise ValueError("参加者IDは1〜64文字で入力してください。")
         if not self.conditions or any(n not in (0, 2) for n in self.conditions):
