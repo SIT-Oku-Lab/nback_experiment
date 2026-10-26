@@ -303,8 +303,11 @@ class SurfaceLayoutTests(unittest.TestCase):
             self.app.rec.physiology = object()
             self.app.rec.metadata["physiology"] = {"error": "信号の受信に失敗しました。" * 12}
             self.root.geometry("1020x750+0+0")
-            self.app.show_results("aborted", "escape")
+            self.app.show_results("aborted", "physiology_stream_error")
             self.root.update()
+            messages = [str(w.cget("text")) for w in self.descendants(self.app.frame)
+                        if isinstance(w, ttk.Label)]
+            self.assertIn("中止理由：" + self.app.rec.metadata["physiology"]["error"], messages)
             self.assert_no_horizontal_clipping()
             canvas = self.app.operator_scroll
             canvas.yview_moveto(1)

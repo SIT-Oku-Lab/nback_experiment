@@ -1381,7 +1381,10 @@ class App:
                        "display_unsupported": "タッチ操作の画面条件を満たしていないため",
                        "window_closed": "ウィンドウを閉じたため", "lsl_send_failed": "LSL送出エラー", "error": "アプリケーションエラー",
                        "physiology_stream_error": "OpenSignalsの生理信号の切断・時計同期・保存エラー"}
-            self.label(f, "中止理由：" + reasons.get(reason, reason)).pack(anchor="w", pady=(8, 0))
+            message = reasons.get(reason, reason)
+            if reason == "physiology_stream_error":
+                message = self.rec.metadata.get("physiology", {}).get("error") or message
+            self.label(f, "中止理由：" + message, wraplength=880).pack(anchor="w", pady=(8, 0))
         self.label(f, "成績は実験者向けです。次の課題まで参加者に見せない運用もできます。", "Muted.TLabel").pack(anchor="w", pady=(10, 15))
         table = ttk.Frame(f)
         table.pack(fill="x", pady=(0, 16))

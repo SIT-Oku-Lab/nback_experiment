@@ -40,6 +40,37 @@ class Sample:
     correction_s: float
     local_s: float
     values: list
+    measured_correction_s: float | None = None
+
+
+class ClockCorrection:
+    """Slew small LSL offset updates without reversing ordered source stamps.
+
+    OpenSignals can timestamp a burst only microseconds apart. Replacing the
+    offset at a chunk boundary can therefore reverse even healthy samples.
+    Limit adjustment to 1% of elapsed source time, retaining source jitter and
+    gaps. Never clamp, reorder, interpolate or discard incoming samples.
+    """
+    SLEW_RATE = .01
+    MAX_OFFSET_CHANGE_S = .1
+
+    def __init__(self, correction_s):
+        self.applied_s = correction_s
+        self.last_remote_s = None
+
+    def apply(self, remote_s, measured_s):
+        if not all(math.isfinite(value) for value in (remote_s, measured_s, self.applied_s)):
+            raise ValueError("生理信号の時刻・時計補正値が不正です。")
+        if self.last_remote_s is not None and remote_s <= self.last_remote_s:
+            raise ValueError("生理信号の送信時刻が逆行・重複しました。")
+        adjustment = measured_s - self.applied_s
+        if abs(adjustment) > self.MAX_OFFSET_CHANGE_S:
+            raise ValueError("生理信号の時計補正値が100 msを超えて変化しました。時計同期を確認してください。")
+        if self.last_remote_s is not None:
+            limit = (remote_s - self.last_remote_s) * self.SLEW_RATE
+            self.applied_s += max(-limit, min(limit, adjustment))
+        self.last_remote_s = remote_s
+        return remote_s + self.applied_s
 
 
 INDEX_FIELDS = ["kind", "block", "n", "trial", "status", "start_session_ms", "end_session_ms",
@@ -59,7 +90,7 @@ class SegmentWriter:
         self.rate = float(stream["nominal_srate"])
         self.settle_s = settle_s
         self.header = ["sample_index", "lsl_remote_s", "clock_correction_s", "lsl_local_s",
-                       "session_ms", "unix_ns"] + [f"ch_{i+1}" for i in range(stream["channel_count"])]
+                       "session_ms", "unix_ns", "lsl_measured_correction_s"] + [f"ch_{i+1}" for i in range(stream["channel_count"])]
         self.raw_handle = (self.path / "continuous.csv").open("x", encoding="utf-8-sig", newline="")
         self.raw = csv.writer(self.raw_handle)
         self.raw.writerow(self.header)
@@ -89,7 +120,9 @@ class SegmentWriter:
 
     def row(self, sample):
         return [sample.index, sample.remote_s, sample.correction_s, sample.local_s,
-                self.ms(sample.perf_ns), self.clock.epoch(sample.perf_ns), *sample.values]
+                self.ms(sample.perf_ns), self.clock.epoch(sample.perf_ns),
+                sample.measured_correction_s if sample.measured_correction_s is not None else sample.correction_s,
+                *sample.values]
 
     def perf(self, session_ms):
         return self.clock.perf_ns + round(float(session_ms) * 1e6)
@@ -345,7 +378,12 @@ class PhysiologyCapture:
             lsl_anchor = local_clock()
             perf_anchor = (before + time.perf_counter_ns()) // 2
             correction = inlet.time_correction(timeout=3)
+            correction_at = time.monotonic()
+            clock_correction = ClockCorrection(correction)
             self.stream.update(channels=channels, xml=full_info.as_xml(), clock_correction="remote + correction = local LSL",
+                               clock_correction_method="slew small offset updates in source time; preserve raw timestamps",
+                               clock_correction_slew_rate=ClockCorrection.SLEW_RATE,
+                               clock_correction_max_offset_change_s=ClockCorrection.MAX_OFFSET_CHANGE_S,
                                lsl_anchor=lsl_anchor, perf_anchor_ns=perf_anchor)
             writer = SegmentWriter(self.parent, self.clock, self.stream)
             while not self.cancel.is_set():
@@ -372,14 +410,13 @@ class PhysiologyCapture:
                     correction_at = time.monotonic()
                 received_at = time.perf_counter_ns()
                 for values, remote_s in zip(samples, timestamps):
-                    if not math.isfinite(remote_s):
-                        raise ValueError("生理信号の時刻が不正です。")
-                    local_s = remote_s + correction
+                    local_s = clock_correction.apply(remote_s, correction)
                     sample_perf = perf_anchor + round((local_s - lsl_anchor) * 1e9)
                     age_ns = received_at - sample_perf
                     if age_ns < -1_000_000_000 or age_ns > 2_000_000_000:
                         raise ValueError("生理信号の時刻がこのPCの時刻と対応しません（1秒超の未来／2秒超の遅延）。")
-                    writer.add(Sample(writer.count + 1, sample_perf, remote_s, correction, local_s, values))
+                    writer.add(Sample(writer.count + 1, sample_perf, remote_s, clock_correction.applied_s,
+                                      local_s, values, correction))
                 if timestamps:
                     self.last_arrival_ns = received_at
                     self.ready.set()
