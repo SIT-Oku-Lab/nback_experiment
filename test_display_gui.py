@@ -96,7 +96,7 @@ class SurfaceLayoutTests(unittest.TestCase):
             output_entry = next(w for w in self.descendants(self.app.frame)
                                 if isinstance(w, ttk.Entry) and str(w.cget("textvariable")) == str(self.app.output))
             self.assertLessEqual(canvas.winfo_rooty() + canvas.winfo_height()
-                                 - output_entry.master.winfo_rooty() - output_entry.master.winfo_height(), 10)
+                                 - output_entry.master.winfo_rooty() - output_entry.master.winfo_height(), 20)
 
     def test_live_overview_and_target_preview_follow_settings_without_trace_leaks(self):
         self.root.geometry("2196x1314+0+0")
@@ -214,7 +214,24 @@ class SurfaceLayoutTests(unittest.TestCase):
                         self.assertTrue(widget.winfo_ismapped())
                         x = widget.winfo_rootx() + widget.winfo_width() // 2
                         y = widget.winfo_rooty() + widget.winfo_height() // 2
-                        self.assertIs(self.root.winfo_containing(x, y), widget)
+                        hit = self.root.winfo_containing(x, y)
+                        if hit is not None:
+                            self.assertIs(hit, widget)
+                        else:
+                            # Native hit testing can miss synthetic oversized Windows
+                            # viewports. Check Tk's actual bounds and stacking order.
+                            current = widget
+                            while current is not self.root:
+                                parent = current.master
+                                self.assertTrue(parent.winfo_rootx() <= x < parent.winfo_rootx() + parent.winfo_width())
+                                self.assertTrue(parent.winfo_rooty() <= y < parent.winfo_rooty() + parent.winfo_height())
+                                siblings = parent.winfo_children()
+                                for sibling in siblings[siblings.index(current) + 1:]:
+                                    if sibling.winfo_ismapped():
+                                        self.assertFalse(sibling.winfo_rootx() <= x < sibling.winfo_rootx() + sibling.winfo_width()
+                                                         and sibling.winfo_rooty() <= y < sibling.winfo_rooty() + sibling.winfo_height(),
+                                                         f"{sibling} covers {widget}")
+                                current = parent
                 self.app.interval.set("1500")
                 self.app.stimulus.set("400")
                 self.app.target_percent.set("40")
@@ -225,6 +242,29 @@ class SurfaceLayoutTests(unittest.TestCase):
                 config = self.app.read_config(False)
                 self.assertEqual((config.interval_ms, config.stimulus_ms, config.target_percent,
                                   config.zero_target, config.seed), (1500, 400, 40, 8, 12345))
+
+    def test_reference_layout_has_contiguous_sections_without_duplicate_note_space(self):
+        for width, height in ((2196, 1314), (2196, 1428), (1464, 876), (2196, 1314)):
+            with self.subTest(viewport=(width, height)):
+                self.root.geometry(f"{width}x{height}+0+0")
+                self.root.update()
+                if width < 1800:
+                    self.assertTrue(self.app.setup_information.winfo_ismapped())
+                    continue
+                self.assertFalse(self.app.setup_information.winfo_ismapped())
+                widgets = list(self.descendants(self.app.frame))
+                note = next(w for w in widgets if isinstance(w, ttk.Label)
+                            and str(w.cget("text")).startswith("1試行＝"))
+                marker = next(w for w in widgets if isinstance(w, ttk.Checkbutton)
+                              and str(w.cget("text")).startswith("追加のLSL"))
+                self.assertLessEqual(marker.winfo_rooty() - note.winfo_rooty() - note.winfo_height(), 10)
+                settings = next(w for w in widgets if isinstance(w, ttk.Entry)
+                                and str(w.cget("textvariable")) == str(self.app.participant)).master
+                advanced = note.master
+                gap = advanced.winfo_rooty() - settings.winfo_rooty() - settings.winfo_height()
+                self.assertTrue(20 <= gap <= 40, gap)
+                self.assertEqual(self.app.setup_scroll.yview(), (0.0, 1.0))
+                self.assert_no_horizontal_clipping()
 
     def test_trial_counts_input_guide_and_recording_guide_follow_settings(self):
         self.assertIn("各200試行", self.app.setup_trial_summary.get())

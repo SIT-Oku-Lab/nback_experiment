@@ -234,12 +234,15 @@ class App:
         sensor_label = ttk.Label(sensor, textvariable=self.sensor_status, style="Muted.TLabel")
         sensor_label.pack(anchor="w")
         sensor.bind("<Configure>", lambda e: sensor_label.configure(wraplength=max(100, e.width - 16)))
+        sensor_note = self.label(sensor, "各刺激試行の終了後と各10分課題の終了後に自動保存します。LabRecorderは不要です。",
+                                 "Muted.TLabel")
 
         columns = ttk.Frame(f)
         columns.pack(fill="x")
         # Both geometry containers must stay below the re-gridded settings frame.
         # Tk keeps sibling stacking order when grid(in_=...) moves a widget.
         advanced = ttk.Frame(f)
+        section_separators = (ttk.Separator(f), ttk.Separator(f))
         left, right = ttk.Frame(f), ttk.Frame(f)
         left.grid(in_=columns, row=0, column=0, sticky="nw")
         right.grid(in_=columns, row=0, column=1, sticky="nw", padx=(28, 0))
@@ -381,13 +384,26 @@ class App:
             redraw_preview()
             queue_layout()
 
+        reference_roomy = None
         def fit_information(event=None):
+            nonlocal reference_roomy
             reference = f.winfo_width() >= 1800 and self.setup_scroll.winfo_height() >= 1000
-            if reference != self.setup_reference_layout:
+            roomy = self.setup_scroll.winfo_height() >= 1300
+            if reference != self.setup_reference_layout or reference and roomy != reference_roomy:
                 self.setup_reference_layout = reference
+                reference_roomy = roomy
+                if not preview_row.winfo_manager():
+                    preview_row.pack(before=marker_control, fill="both", expand=True, pady=(8, 5))
                 preview.pack_forget()
                 right.grid_forget()
                 if reference:
+                    row_gap = 5 if roomy else 3
+                    section_gap = 18 if roomy else 12
+                    f.configure(padding=(36, 25 if roomy else 16, 25, 8))
+                    sensor.pack_configure(pady=(14, 0))
+                    stream_row.pack_configure(pady=(7, 5))
+                    sensor_note.pack(anchor="w", pady=(3, 0))
+                    section_separators[0].pack(before=columns, fill="x", pady=section_gap)
                     header.pack_forget()
                     reference_header.pack(before=sensor, fill="x")
                     participant.grid(in_=columns, row=0, column=1, sticky="nw", padx=(35, 0))
@@ -395,22 +411,35 @@ class App:
                     preview.pack(in_=participant, before=participant_note, anchor="w", pady=(12, 0))
                     for widget, original in left_grid:
                         row = int(original["row"])
+                        widget.grid(pady=(0, 12 if roomy else 8) if row == 0 else (8, 0) if row == 6 else row_gap)
                         if row in (3, 6):
                             widget.grid(row=6 if row == 3 else 7)
                     duration_title.grid(row=3, column=0, sticky="w", padx=(0, 12), pady=3)
                     duration_value.grid(row=3, column=1, sticky="w", pady=3)
-                    advanced.pack(before=preview_row, fill="x", pady=(12, 0))
+                    advanced.pack(before=marker_control, fill="x")
+                    section_separators[1].pack(before=advanced, fill="x", pady=section_gap)
                     right.grid(in_=advanced, row=0, column=0, sticky="nw")
                     for widget, original in advanced_grid:
                         row = int(original["row"])
                         column = int(original["column"])
+                        widget.grid(pady=row_gap)
                         if row == 0:
-                            widget.grid(columnspan=4)
+                            widget.grid(columnspan=4, pady=(0, 8))
                         elif row in (4, 5):
                             widget.grid(row=row - 3, column=column + 2, padx=(28 if column == 0 else 0, 12))
                         elif row == 6:
-                            widget.grid(row=4, columnspan=4)
+                            widget.grid(row=4, columnspan=4, pady=(7, 8))
+                    recording_note.pack(before=output_row, anchor="w", pady=(3, 8))
+                    output_row.pack_configure(pady=(0, 12 if roomy else 8))
                 else:
+                    f.configure(padding=(24, 8, 24, 8))
+                    sensor.pack_configure(pady=(6, 8))
+                    stream_row.pack_configure(pady=(3, 2))
+                    sensor_note.pack_forget()
+                    for separator in section_separators:
+                        separator.pack_forget()
+                    recording_note.pack_forget()
+                    output_row.pack_configure(pady=0)
                     reference_header.pack_forget()
                     header.pack(before=sensor, fill="x")
                     participant.grid_forget()
@@ -431,7 +460,8 @@ class App:
                     preview.pack(in_=preview_row, side="left", padx=(0, 14))
                 queue_layout()
             arrange_details()
-            available = self.setup_scroll.winfo_height() - (f.winfo_reqheight() - preview_row.winfo_reqheight())
+            information_height = preview_row.winfo_reqheight() + 13 if preview_row.winfo_manager() else 0
+            available = self.setup_scroll.winfo_height() - (f.winfo_reqheight() - information_height)
             expanded = available >= max(240, details.winfo_reqheight()) + 16 and f.winfo_width() >= 1200
             if expanded != self.setup_information_expanded:
                 self.setup_information_expanded = expanded
@@ -446,6 +476,14 @@ class App:
                         preview.configure(width=100, height=84)
                     compact.pack(side="left", fill="x", expand=True)
                 queue_layout()
+            # At the reference size, the preview and essential guidance already
+            # live in the upper sections. Avoid stretching a duplicate note row.
+            if reference and not expanded:
+                preview_row.pack_forget()
+            elif reference:
+                preview_row.pack(after=advanced, fill="both", expand=True, pady=(8, 5))
+            elif not preview_row.winfo_manager():
+                preview_row.pack(before=marker_control, fill="both", expand=True, pady=(8, 5))
         def queue_layout():
             if self.setup_layout_timer is None:
                 self.setup_layout_timer = self.root.after_idle(refresh_information)
@@ -465,8 +503,11 @@ class App:
             trace = variable.trace_add("write", update_information)
             self.setup_traces.append((variable, trace))
         update_information()
-        ttk.Checkbutton(f, text="追加のLSLマーカー送出（任意・LabRecorder等で記録）", variable=self.lsl_enabled,
-                        state="normal" if lsl_available else "disabled").pack(anchor="w")
+        marker_control = ttk.Checkbutton(f, text="追加のLSLマーカー送出（任意・LabRecorder等で記録）", variable=self.lsl_enabled,
+                                        state="normal" if lsl_available else "disabled")
+        marker_control.pack(anchor="w")
+        recording_note = self.label(f, "BITalino / OpenSignals 対応手順は README_ja.md を参照。" +
+                                    ("" if lsl_available else " LSL利用時は pylsl の追加が必要です。"), "Muted.TLabel")
         output_row = ttk.Frame(f)
         output_row.pack(fill="x")
         self.label(output_row, "保存先").pack(side="left", padx=(0, 12))
