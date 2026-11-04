@@ -99,6 +99,8 @@ class Recorder:
             if config.physiology:
                 if stream_info is None or stream_info.uid() != config.physiology_uid:
                     raise ValueError("選択したOpenSignalsの信号が見つかりません。再検索してください。")
+                if config.ecg_channel > 0 and config.ecg_channel > stream_info.channel_count():
+                    raise ValueError("指定したECG列が信号のチャンネル数を超えています。LSL列番号を確認してください。")
                 from physiology import PhysiologyCapture
                 self.physiology = PhysiologyCapture(self.path, self.clock, stream_info)
                 self.physiology.wait_ready()
@@ -182,6 +184,21 @@ class Recorder:
             if self.metadata["physiology"]["error"] and status == "completed":
                 status, reason = "error", self.metadata["physiology"]["error"]
             self.event("physiology_saved", **self.metadata["physiology"])
+            from ecg_analysis import analyze_recording, write_json
+            try:
+                if not self.metadata["physiology"]["finished"]:
+                    raise RuntimeError("生理信号のファイルが確定していないためECG解析を実行しません。")
+                self.metadata["ecg"] = analyze_recording(self.path, self.physiology.stream, self.config.ecg_channel)
+            except Exception as exc:
+                # Derived metrics must never destroy or invalidate the saved raw signal.
+                self.metadata["ecg"] = {"status": "failed", "reason": str(exc), "folder": "physiology/ecg"}
+                try:
+                    folder = self.path / "physiology" / "ecg"
+                    folder.mkdir(parents=True, exist_ok=True)
+                    write_json(folder / "report.json", self.metadata["ecg"])
+                except OSError:
+                    pass
+            self.event("ecg_analysis_saved", **self.metadata["ecg"])
         self.event("session_end", status=status, reason=reason)
         self.metadata.update(status=status, reason=reason, ended_utc=utc_iso(time.time_ns()),
                              event_count=self.event_count, lsl_failed=self.lsl_failed)

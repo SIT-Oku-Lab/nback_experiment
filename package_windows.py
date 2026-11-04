@@ -3,9 +3,10 @@ import hashlib
 from pathlib import Path
 import shutil
 import zipfile
+from engine import VERSION
 
 root = Path(__file__).resolve().parent
-app_dir = root / "dist" / "v1.1.0" / "NBackExperiment"
+app_dir = root / "dist" / f"v{VERSION}" / "NBackExperiment"
 for name in ("README_ja.md", "VERIFICATION_ja.md"):
     shutil.copy2(root / name, app_dir / name)
 for source in (root / "licenses").glob("*"):
@@ -18,5 +19,5 @@ with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
         if path.is_file() and not any(part in ("results", "verification_results", "__pycache__") for part in relative.parts):
             package.write(path, Path("NBackExperiment") / relative)
 digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-(root / "NBackExperiment_Windows.sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
+(root / "NBackExperiment_Windows.sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii", newline="\n")
 print(f"{archive}\n{archive.stat().st_size / 1024 / 1024:.1f} MiB\nSHA256 {digest}")

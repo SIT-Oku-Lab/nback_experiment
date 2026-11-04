@@ -128,6 +128,7 @@ class SchedulerTests(unittest.TestCase):
         app.root = types.SimpleNamespace(update_idletasks=lambda: None)
         app.finish = lambda status: (setattr(app, "active", False), app.rec.finish(status))
         app.key_down = False
+        app.display_changed = False
         return app
 
     def advance(self, app, elapsed_ms):
