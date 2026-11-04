@@ -1,5 +1,17 @@
 # 検証結果
 
+## ローカル最新版のGitHub同期前確認（v1.3.0、2026-11-04）
+
+- 同期元はローカルの`2714804`（v1.3.0）。GitHubの`feature/ecg-hr-hrv`と追跡対象ファイルが一致し、未送信のソース変更はありませんでした。リモートdevelopには24コミットが未統合で、mainにはまだアプリ本体がありませんでした。既存PR #4を通じてdevelopへ取り込み、mainへの反映もPRを経由する方針です。今回アプリのソース・依存定義・起動スクリプトは変更していません。
+- ローカルの`.git/config`が全体にNULの入った不正な設定ファイルになっていました。`.test_tmp/git-config-corrupt-20261104.bin`へバックアップし、既存の参照とFETCH_HEADで対象を確認してorigin接続設定等を復旧しました。作業ファイルとコミット履歴は保持しています。
+- `PYTHONPATH=.build_deps`、TEMP/TMPを`.test_tmp`に指定した`python -m unittest -v`は全102件成功（100.089秒）。ログは`.test_tmp/sync-20261104-tests.log`です。`python build_windows.py`も成功し、現在のソースから`dist/v1.3.0/NBackExperiment`を再ビルドしました。ログは`.test_tmp/sync-20261104-build.log`です。
+- 引数なしのリポジトリの`launch.cmd`から実際に起動し、実プロセスの実行パス`C:\nback_experiment\dist\v1.3.0\NBackExperiment\NBackExperiment.exe`と、画面のv1.3.0・本実験各10分／練習各60秒を照合しました。再ビルドしたexeのSHA256は`e53fe1d7a02d3619465431ba4e6c657b79f8b541a8766cb655a8d9c730e78456`です。
+- 最初は既存`synthetic_signal.py --ecg`の1000 Hz・3列の合成信号を選び、キーボード方式で0-backの60秒練習を実施しました。課題・生理信号は完了して保存されましたが、ECGは`no_beats_detected`でHR/HRVは空欄でした。同じ保存波形のオフライン比較では、元の振幅（最大値と最小値の差約1.163）で検出0拍、200倍の振幅で90拍・平均RR 1000 msとなることを確認しました。現行検出処理の振幅に対する制約として残し、低振幅ECGでの算出成功とは扱いません。
+- 次に、既存の解析テストと同じADC振幅`1024 + 200 * ecg`を送る検証専用スクリプト`.test_tmp/sync_adc_signal.py`を用意しました。追跡対象の`synthetic_signal.py`やアプリは変更していません。`launch.cmd`から起動し直した同じexeで、`OpenSignals-SYNTHETIC-ECG / NOT-A-REAL-DEVICE`（1000 Hz・nSeq/ECGBIT0/EDA）を明示選択。0-backのみ・タッチ方式を選び、マウスで「練習（各60秒）」と説明画面の「開始」を押して実施しました。表示上の参加者IDは既定値P001ですが、実参加者の記録ではなく全て合成信号です。
+- 結果画面の「実施を終了しました」「HR・HRVの解析記録を保存しました」と、保存先`dist/v1.3.0/NBackExperiment/results/20261104_175339_P001_practice_726cc276`を照合しました。`session.json`は`completed`、20試行、提示スキップ0・50 ms超の提示遅延0、生理信号81,034サンプル、保存21区間・不完全0・ギャップ0でした。各試行の生理信号CSVが練習途中にも確定されることを確認しました。
+- `physiology/ecg/report.json`は`computed`、ECGBIT0をLSL第2列から自動認識、81拍・採用RR80・除外0・記録不連続0・検出エラー0でした。`beats.csv`、`rolling_hrv.csv`、`segments_hr_hrv.csv`の保存を確認。60秒の課題区間と全5件の60秒移動窓はHR 60 bpm・RR 1000 ms・SDNN/RMSSD/pNN50が全て0で、一定間隔の合成波形に対応しました。課題区間の採用RRは59個、品質は`screened_rr_requires_review`です。
+- 今回はソースと文書のGitHub同期です。実験記録、検証出力、依存ライブラリ、ビルドフォルダ、ZIPは既存の除外設定を維持し、Gitへ登録しません。再ビルドしたexeのGitHub Release公開や既存ZIPの差し替えは行っていません。BITalino/OpenSignals実機、実タッチ接触、各600秒の本実験、300秒窓のGUI収録、Pythonへのフォールバック起動と起動引数の再実操作は今回の確認範囲に含みません。振幅に対する制約と実機の拍・品質の目視照合は引き続き未解決・未検証です。
+
 ## ECGからHR・HRVを記録する機能（v1.3.0、2026-10-26）
 
 - 新規ブランチは`feature/ecg-hr-hrv`。developから作成し、依存するv1.2.14のUI・時計補正修正を引き継ぎました。ECG入力はユーザー指定のA2。既存の機器メタデータのラベル`ECGBIT0`を自動認識し、物理入力番号とLSL列番号を混同しません。ラベルが曖昧な場合は勝手に選択せず、`--ecg-channel`で1始まりのLSL列を指定できます。
@@ -8,7 +20,7 @@
 - `PYTHONPATH=.build_deps`で全102テスト成功（`.test_tmp/ecg-all-tests-final.log`）。正負のECG極性・ADCオフセット、既知の60 bpm、変動RRによる非ゼロHRV、解析的に計算できるSDNN/RMSSD/pNN50、60秒/300秒窓、バースト送出時刻、非有限ECG、RR除外前後をつながないこと、ECG列の誤選択防止、解析失敗時の元記録保持を検証しました。依存ライブラリ導入時にも表示テストが実機接続を要求しないよう、テスト側の生理信号受信を明示的に無効にしました。
 - 公開注釈付きECGの[MIT-BIH record 100](https://physionet.org/content/mitdb/1.0.0/)先頭120秒・第1チャンネルを本解析処理へ通し、100 ms許容幅で注釈148拍に対して検出148拍、感度1.0・陽性的中率1.0を確認しました（`verification_results/ecg_mitbih_100/benchmark.json`）。単一の公開区間の検証であり、BITalino実機や臨床精度の検証ではありません。生波形・注釈はリポジトリに登録していません。
 - Windows版を現在のソースから`dist/v1.3.0/NBackExperiment`へビルドしました。`launch.cmd`から起動し、実行パスと画面のv1.3.0を照合。設定画面のshow_setupはv1.2.12とASTが一致し、配布exeにECG解析とWFDB XQRSが含まれることも確認しました。
-- 合成ECGのLSL検索後にWindowsセキュリティの許可画面が表示され、ユーザーに手動操作を依頼しています。launch.cmd起動版での練習完了・HR/HRVファイルの保存結果は、この操作後に確認します。A2接続のBITalino/OpenSignals実機によるHR/HRVの再計測と検出拍の目視照合は未実施です。
+- この時点では合成ECGのLSL検索後にWindowsセキュリティの許可画面が表示され、練習完了・HR/HRV保存の確認は待機中でした。2026-11-04にlaunch.cmd起動版とADC振幅の合成信号で完了・保存を確認しました（上記参照）。低振幅波形の制約、A2接続のBITalino/OpenSignals実機によるHR/HRVの再計測と検出拍の目視照合は残っています。
 
 ## v1.2.12のUIを維持したOpenSignals修正版（v1.2.14、2026-10-26）
 
